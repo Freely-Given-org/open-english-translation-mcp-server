@@ -1,0 +1,32 @@
+[project]
+name = "oet-mcp-server"
+version = "0.1.0"
+description = "Model Context Protocol (MCP) Server for the Open English Translation of the Bible (OET)"
+readme = "README.md"
+authors = [
+    { name = "Robert Hunt", email = "Freely.Given.org+OET.MCP@gmail.com" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.2.0",
+    "pydantic>=2.0",
+]
+
+[project.scripts]
+oet-mcp-server = "oet_mcp_server.__main__:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.10.4,<0.11.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
+

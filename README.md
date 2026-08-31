@@ -1,108 +1,174 @@
-# open-english-translation-mcp-server
-MCP Server to make the Open English Translation of the Bible (OET) easily available to LLMs
+# Open English Translation (OET) MCP Server
 
-### Prompt
+An official **Model Context Protocol (MCP)** server providing Large Language Models (LLMs) with high-speed, structured access to the **Open English Translation (OET)** of the Bible.
 
-My (open source) Open English Translaton of the Bible (OET.Bible) has a "Readers' Version" and a "Literal Version" side by side, with all words linked by a word number to their Hebrew and Greek original words. Explain how a MCP could make this info easily accessible to LLMs.
+---
 
-### Gemini's response
+## What Makes the OET Different?
 
-To make a side-by-side, word-linked dataset like the Open English Translation (OET) seamlessly accessible to Large Language Models, you want to shift from treating the Bible as flat text to treating it as a graph-relational database.
+1. **Dual-Stream Parallel Translation**:
+   * **Readers' Version (OET-RV)**: Natural, idiomatic, thought-for-thought modern English designed for macro-level discourse comprehension and fluency.
+   * **Literal Version (OET-LV)**: Transparent, hyper-literal formal equivalence showing every added copula, article, transitive direct object, and untranslated particle.
+2. **Word-Level Lexical Graph & Interlinear**:
+   * Every word token is cross-linked via TSV datasets to Hebrew/Aramaic (`UHB`) and Greek (`SR-GNT`) dictionary entries, lemmas, Strong's numbers, morphological tags, and canonical gloss distributions.
+3. **Explicit Translation Decision Tags (`\add`)**:
+   * Encodes the exact reason for every addition or divergence (`@` for referent replacements, `≈` for rewordings, `#` for number changes, `%` for speech shifts, `^` for opposite phrasing, `?` for uncertainty, `≈`/`^`/`→` for Hebrew poetic parallelism, and `⇔` for clause re-ordering).
 
-An MCP (Model Context Protocol) Server acts as the perfect interface because it allows the LLM to dynamically fetch exactly the context it needs (e.g., just the underlying Greek root of a specific word or a comparison of a single verse) rather than choking the model's context window with thousands of lines of unnecessary text.
+---
 
-Here is a structural breakdown of how you can organize your OET data into the three core pillars of MCP—Resources, Resource Templates, and Tools—to make it instantly navigable for an AI agent.
+## Quick Start
 
-1. Resources: Exposing the Parallel Text
-Resources are static or semi-static entry points that the LLM can read like open files. You can expose your individual translation versions here.
+### Running via `uvx`
 
-oet://catalog: Returns an overview of books, chapter counts, and available versions (literal, readers).
-
-oet://literal/metadata and oet://readers/metadata: Provides the translation philosophy for each version. This is critical because when an LLM understands why the Literal version chose a rigid structure over the Readers' fluid layout, its commentary becomes vastly more accurate.
-
-2. Resource Templates: Dynamic Lookups
-Resource templates use URI patterns to let the LLM request granular chunks of the parallel text on demand.
-
-Instead of passing entire chapters, the LLM can query specific structural addresses:
-
-oet://{version}/{book}/{chapter}: Allows the model to pull just the text it needs to answer a user's query.
-
-oet://lexicon/{word_number}: Maps directly to your Hebrew/Greek dictionary definitions, grammatical parsing, and Strong’s alignment.
-
-When the LLM reads a template like oet://parallel/Gen/1/1, your MCP server can return a beautifully structured payload (like JSON or Markdown) displaying the alignment:
-
-JSON
-{
-  "reference": "Genesis 1:1",
-  "alignment": [
-    {
-      "word_number": "H7225",
-      "original": "בְּרֵאשִׁ֖ית",
-      "literal": "In the beginning",
-      "readers": "In the beginning"
-    },
-    {
-      "word_number": "H1254",
-      "original": "בָּרָ֣א",
-      "literal": "created",
-      "readers": "created"
-    },
-    {
-      "word_number": "H430",
-      "original": "אֱלֹהִ֑ים",
-      "literal": "God",
-      "readers": "God"
-    }
-  ]
-}
-3. Tools: Enabling Analytical Action
-Tools are executable Python or Rust functions that the LLM can actively call to perform calculations, scans, or transformations across the OET components. This is where the magic happens for your cross-linked data.
-
-Tool A: find_word_occurrences(word_number: str)
-Instead of the LLM guessing where else a Hebrew or Greek word appears, this tool queries your database and returns a list of every verse utilizing that exact word_number.
-
-AI Benefit: If a user asks, "How does the OET translate 'Logos' outside of the Gospel of John?", the LLM can call this tool to see every rendering in both the Literal and Readers' versions instantly.
-
-Tool B: compare_translation_diffs(book: str, chapter: int, verse: int)
-This tool can isolate rows where the divergence between the Literal and Readers' text crosses a certain linguistic threshold.
-
-AI Benefit: The LLM can automatically flag significant translation choices and proactively explain to the user: "Notice that in the Literal version it uses word X to match the Hebrew syntax, but the Readers' version transforms it into phrase Y for natural flow."
-
-Tool C: get_translation_notes(word_number: str, context_verse: str)
-If your dataset includes translator annotations or alignment justifications, this tool serves them up right when the model spots a complex translation knot.
-
-How the LLM Experiences Your OET Data Loop
-When a user asks an MCP-enabled LLM: "Why does the Readers' version of Romans 1:17 use 'faith' differently than the Literal version?", the model executes a seamless chain of thoughts behind the scenes:
-
-1. LLM detects it needs OET context ──> Calls template `oet://parallel/Rom/1/17`
-2. Server responds with both versions and the underlying Greek word numbers.
-3. LLM spots the word number for "faith/faithfulness" (G4102).
-4. LLM calls tool `find_word_occurrences("G4102")` to see the broader translation patterns.
-5. LLM synthesizes a deep, highly precise textual commentary without ever hallucinating the verses.
-
-By publishing this setup as an open package (like a PyPI package built via your uv/Maturin workflows), any researcher or developer running an MCP-compliant application can hook your entire interconnected translation ecosystem straight into their AI workspace.
-
-### Prompt
-
-Is there a preferred name for the GitHub repo?
-
-### Response
-
-When structuring an open-source Model Context Protocol (MCP) server for a project with multiple repositories like yours under the Freely-Given-org umbrella, there are two distinct naming conventions to consider depending on where it lives:
-
-If you decide to isolate the MCP server code into its own repository (which makes it easier to track issues, manage uv/Maturin workflows, and target the official MCP registry), the preferred, community-standard naming scheme is lowercase, hyphenated, appending -mcp-server:
-
-open-english-translation-mcp-server
-
-Why? The MCP developer community uses this pattern (e.g., sqlite-mcp-server, postgres-mcp-server) because it makes the purpose of the repository immediately scannable on GitHub and mirrors the naming structure required if you register it globally.
-
-For the PyPI Package Name
-
-Regardless of which GitHub structure you choose, when you publish the package to PyPI so LLMs can execute it via uvx, the preferred package name is:
-
-Bash
-oet-mcp-server
-This keeps the CLI command incredibly clean for users attaching it to their local tools:
+```bash
 uvx oet-mcp-server
+```
 
+### Installation from Source
 
+```bash
+git clone https://github.com/Freely-Given-org/open-english-translation-mcp-server.git
+cd open-english-translation-mcp-server
+uv sync
+uv run oet-mcp-server
+```
+
+---
+
+## AI Client Configuration
+
+### 1. Claude Desktop / Antigravity / Cursor
+
+Add to your `claude_desktop_config.json` or MCP settings:
+
+```json
+{
+  "mcpServers": {
+    "oet-bible": {
+      "command": "uvx",
+      "args": ["oet-mcp-server"]
+    }
+  }
+}
+```
+
+Or for local development:
+
+```json
+{
+  "mcpServers": {
+    "oet-bible": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/srv/FreelyGiven/open-english-translation-mcp-server",
+        "run",
+        "oet-mcp-server"
+      ]
+    }
+  }
+}
+```
+
+---
+
+## MCP Server Capabilities
+
+### 1. Resources & Resource Templates
+
+| URI Pattern | Description |
+| :--- | :--- |
+| `oet://catalog` | Lists all 66+ biblical books, chapter counts, testaments, and translation status. |
+| `oet://metadata/rv` | Translation philosophy and `\add` decision encoding guide for OET-RV. |
+| `oet://metadata/lv` | Markup guide for OET-LV (added copulas, untranslated particles, direct objects). |
+| `oet://formats` | Complete specification of OET encoding formats and special character codes. |
+| `oet://passage/{version}/{reference}` | Direct reading URI for any passage (`parallel`, `rv`, `lv`, `interlinear`). |
+| `oet://word/{word_id}` | Lookup a specific word link token (e.g. `JHNc1v1w5`, `MAT_1:1w1`). |
+| `oet://lexicon/{lang}/{query}` | Dictionary definition and canonical gloss distribution for a lemma or Strong's ID. |
+
+---
+
+### 2. Tools
+
+#### `get_passage`
+Retrieve scripture in parallel side-by-side, readers, literal, or interlinear table view.
+* **Arguments**:
+  * `reference` (*string*, required): e.g. `"John 1:1-5"`, `"Rom 8:28"`, `"Gen 1:1"`.
+  * `version` (*string*): `"parallel"`, `"rv"`, `"lv"`, or `"interlinear"`.
+  * `include_notes` (*bool*): Attach translator footnotes (`TD:`, `TC:`) and cross-references.
+  * `format` (*string*): `"markdown"` or `"json"`.
+  * `show_decision_codes` (*bool*): Reveal inline decision tags (`[@referent]`, `[≈rewording]`).
+
+#### `compare_translations`
+Calculates a granular comparative breakdown between OET-RV and OET-LV for a passage.
+* **Arguments**:
+  * `reference` (*string*, required): e.g. `"John 1:1-3"`, `"Romans 1:16-17"`.
+
+#### `search_text`
+High-speed full-text search across RV and LV using SQLite FTS5.
+* **Arguments**:
+  * `query` (*string*, required): e.g. `"true light"`, `"covenant"`.
+  * `version` (*string*): `"both"`, `"rv"`, or `"lv"`.
+  * `testament` (*string*): `"all"`, `"OT"`, or `"NT"`.
+  * `limit` (*int*): Max results (default 20).
+
+#### `search_lemma`
+Concordance lookup showing how an original Hebrew/Greek root or Strong's ID is translated across the entire Bible.
+* **Arguments**:
+  * `lemma_or_strongs` (*string*, required): e.g. `"logos"`, `"G3056"`, `"bereshit"`, `"H7225"`.
+  * `testament` (*string*): `"all"`, `"OT"`, `"NT"`.
+  * `limit` (*int*): Max sample occurrences.
+
+#### `lookup_word`
+Drill down into a specific original word link token with complete grammatical parsing and manuscript collations.
+* **Arguments**:
+  * `word_id` (*string*, required): e.g. `"JHNc1v1w5"`, `"MAT_1:1w1"`.
+
+#### `get_lexicon_entry`
+Retrieve dictionary definition, semantic domain, and canonical distribution for a lemma or Strong's ID.
+* **Arguments**:
+  * `query` (*string*, required): Lemma or Strong's ID.
+  * `lang` (*string*): `"auto"`, `"greek"`, `"hebrew"`.
+
+#### `get_translation_decisions`
+Isolates all explicit `\add` decision codes in a passage.
+* **Arguments**:
+  * `reference` (*string*, required): e.g. `"John 1:1-18"`.
+
+---
+
+### 3. MCP Prompts
+
+* **`comparative_exegesis`**: Guided prompt leading an AI through rigorous exegesis (macro discourse in RV, micro syntax in LV, and root word studies).
+* **`biblical_word_study`**: Guided prompt performing a complete biblical word study across genres and testaments.
+* **`translation_critique`**: Guided prompt analyzing why modern dynamic translations diverge from literal syntax in difficult verses.
+
+---
+
+## OET Translation Decision Codes Reference
+
+| Code | Category | Meaning | Example |
+| :---: | :--- | :--- | :--- |
+| `@` | Referent Replacement | Pronoun changed to explicit name | `\add @David\add*` |
+| `≈` | Rewording | Rephrased for modern clarity | `\add ≈answered\add*` |
+| `#` | Number Change | Singular generalized to plural | `\add #people\add*` |
+| `%` | Person Shift | Direct speech flattened to indirect | `\add %that he will\add*` |
+| `^` | Opposite Phrasing | Saying phrased positively | `\add ^always open\add*` |
+| `+` | Added Article | Article added for English grammar | `\add +the\add*` |
+| `=` | Added Copula | Helping verb ('is', 'was') added | `\add =is\add*` |
+| `<` | Added Direct Object | Object added for transitive verb | `\add <it\add*` |
+| `>` | Added Implied Object | Implied entity ('thing', 'person') | `\add >things\add*` |
+| `≡` | Elided Repetition | Repeated elided word for clarity | `\add ≡pursued\add*` |
+| `&` | Added Owner | Possessive added for naturalness | `\add &his\add*` |
+| `?` | Uncertainty Marker | Translator doubt regarding intent | `\add ?in the clouds\add*` |
+| `≈` *(line)* | Synonymous Parallelism | Second poetic line reiterates first | `\q1 ≈Yahweh gives comfort` |
+| `^` *(line)* | Antithetic Parallelism | Second poetic line states contrast | `\q1 ^but Israel will fall` |
+| `→` *(line)* | Synthetic Parallelism | Second poetic line reaches result | `\q1 →and he answered` |
+| `⇔` *(verse)*| Order Swapped | Clauses inverted for English flow | `\v 10 ⇔The girls did...` |
+
+---
+
+## License
+
+* Code: Open Source under the MIT / GPL-3.0 License.
+* OET Text & Datasets: Creative Commons Attribution-ShareAlike ([CC-BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)) by [Freely-Given.org](https://freely-given.org).
