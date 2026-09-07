@@ -484,7 +484,7 @@ class OETDatabase:
             if not row:
                 cur.execute("""
                 SELECT l.* FROM lexicon_fts f
-                JOIN lexicon l ON f.lemma_key = l.lemma_key
+                JOIN lexicon l ON f.rowid = l.rowid
                 WHERE lexicon_fts MATCH ? LIMIT 1
                 """, (q,))
                 row = cur.fetchone()
@@ -525,7 +525,7 @@ class OETDatabase:
             sql = """
             SELECT v.verse_id, v.book_code, v.chapter, v.verse, v.rv_text_clean, v.lv_text_clean, b.english_name, b.testament
             FROM verses_fts f
-            JOIN verses v ON f.verse_id = v.verse_id
+            JOIN verses v ON f.rowid = v.rowid
             JOIN books b ON v.book_code = b.book_code
             WHERE verses_fts MATCH ?
             """

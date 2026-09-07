@@ -1,0 +1,9 @@
+# Smithery configuration for Open English Translation (OET) MCP Server
+# https://smithery.ai/docs/config
+
+startCommand:
+  type: stdio
+  config:
+    command: uvx
+    args:
+      - oet-mcp-server

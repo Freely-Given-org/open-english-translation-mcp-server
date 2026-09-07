@@ -1,0 +1,15 @@
+[Unit]
+Description=Open English Translation (OET) MCP Server
+After=network.target
+
+[Service]
+Type=simple
+User=robert
+WorkingDirectory=/srv/FreelyGiven/open-english-translation-mcp-server
+ExecStart=/home/robert/.local/bin/uv run oet-mcp-server --transport sse --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+Environment=PATH=/home/robert/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=multi-user.target

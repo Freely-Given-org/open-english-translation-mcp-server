@@ -470,8 +470,10 @@ def create_schema(conn: sqlite3.Connection):
         book_code,
         chapter UNINDEXED,
         verse UNINDEXED,
-        rv_text,
-        lv_text
+        rv_text_clean,
+        lv_text_clean,
+        content='verses',
+        content_rowid='rowid'
     );
 
     CREATE VIRTUAL TABLE lexicon_fts USING fts5(
@@ -481,7 +483,8 @@ def create_schema(conn: sqlite3.Connection):
         lemma_display,
         strongs,
         primary_gloss,
-        glosses
+        content='lexicon',
+        content_rowid='rowid'
     );
     """)
     conn.commit()
@@ -675,11 +678,10 @@ def ingest_word_tables(conn: sqlite3.Connection):
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, lex_rows)
 
-    cur.executemany("""
-    INSERT INTO lexicon_fts (
-        lemma_key, lang, lemma, lemma_display, strongs, primary_gloss, glosses
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, lex_fts_rows)
+    cur.execute("""
+    INSERT INTO lexicon_fts (rowid, lemma_key, lang, lemma, lemma_display, strongs, primary_gloss)
+    SELECT rowid, lemma_key, lang, lemma, lemma_display, strongs, primary_gloss FROM lexicon;
+    """)
     conn.commit()
     print("Lexicon and words ingested successfully.")
 
@@ -805,15 +807,6 @@ def ingest_bibles(conn: sqlite3.Connection):
             section
         ))
 
-        fts_rows.append((
-            v_id,
-            book_code,
-            chapter,
-            verse_num,
-            rv_clean or "",
-            lv_clean or ""
-        ))
-
     cur.executemany("""
     INSERT INTO verses (
         verse_id, book_code, chapter, verse, verse_label,
@@ -824,11 +817,10 @@ def ingest_bibles(conn: sqlite3.Connection):
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, verse_rows)
 
-    cur.executemany("""
-    INSERT INTO verses_fts (
-        verse_id, book_code, chapter, verse, rv_text, lv_text
-    ) VALUES (?, ?, ?, ?, ?, ?)
-    """, fts_rows)
+    cur.execute("""
+    INSERT INTO verses_fts (rowid, verse_id, book_code, chapter, verse, rv_text_clean, lv_text_clean)
+    SELECT rowid, verse_id, book_code, chapter, verse, rv_text_clean, lv_text_clean FROM verses;
+    """)
     conn.commit()
 
     # Insert notes
