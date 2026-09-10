@@ -1,4 +1,4 @@
-FROM python:3.12-slim-bookworm
+FROM python:3.14-slim-trixie
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -27,6 +27,6 @@ COPY . /app
 RUN uv sync
 
 # Expose default port if proxy runs over HTTP/SSE
-EXPOSE 8000
+EXPOSE 8080
 
 CMD ["mcp-proxy", "--", "uv", "run", "oet-mcp-server"]
