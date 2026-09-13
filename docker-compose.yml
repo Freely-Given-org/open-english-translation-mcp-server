@@ -1,13 +1,20 @@
-version: '3.8'
-
 services:
   oet-mcp-server:
+    # Prefer the CI-built image from GHCR (OET_MCP_IMAGE override), falling
+    # back to the locally-built `oet-mcp-server` image. Local builds require
+    # `git lfs pull` first; scripts/verify_db.py fails the build otherwise.
     build: .
-    image: oet-mcp-server
+    image: ${OET_MCP_IMAGE:-ghcr.io/freely-given-org/open-english-translation-mcp-server:latest}
     container_name: oet-mcp-server
     restart: unless-stopped
     environment:
       - MCP_PROXY_DEBUG=true
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "/app/scripts/healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
     networks:
       - proxy
     labels:

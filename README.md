@@ -168,6 +168,43 @@ Isolates all explicit `\add` decision codes in a passage.
 
 ---
 
+## Deployment (Docker)
+
+> **Important:** the 191 MB corpus database is stored as a **Git-LFS** file. A
+> checkout without `git lfs pull` contains only a ~130-byte LFS pointer, which
+> makes every data tool fail at runtime. The Dockerfile guards against this:
+> `scripts/verify_db.py` runs at build time and **fails the build** if the DB
+> isn't a real, queryable SQLite database.
+
+### Recommended: use the CI-built image
+
+The `.github/workflows/docker-publish.yml` workflow materializes the LFS data,
+builds the image, and pushes it to GHCR (`ghcr.io/.../open-english-translation-mcp-server:latest`).
+Deploying servers then pull instead of building:
+
+```bash
+git clone --filter=blob:none https://github.com/Freely-Given-org/open-english-translation-mcp-server.git
+cd open-english-translation-mcp-server
+docker compose pull          # pulls the GHCR image
+docker compose up -d         # no local build, no LFS data needed on the server
+```
+
+`OET_MCP_IMAGE` overrides the image used by `docker-compose.yml`.
+
+### Building locally
+
+```bash
+git lfs install && git lfs pull   # materialize the real corpus DB
+docker compose up -d --build
+```
+
+The container exposes a Docker healthcheck ((`scripts/healthcheck.py`) that
+validates the DB and that the MCP proxy is accepting connections, so
+`docker inspect` / orchestrators report the deploy as unhealthy if the DB is
+invalid.
+
+---
+
 ## License
 
 * Code: Open Source under the MIT / GPL-3.0 License.

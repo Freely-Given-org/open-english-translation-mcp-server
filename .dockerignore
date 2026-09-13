@@ -1,0 +1,12 @@
+# Exclude large / environment-specific files from the Docker build context.
+# Notably .git holds the Git-LFS objects (the 191 MB corpus DB) that must NOT
+# be shipped into the image; the working-tree DB file at
+# src/oet_mcp_server/data/oet_corpus.db (after `git lfs pull`) is what's used.
+.git
+.venv
+dist
+__pycache__/
+*.py[cod]
+.pytest_cache
+tests
+.github

@@ -1,0 +1,62 @@
+name: Build & publish Docker image
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  docker:
+    name: Build and push to GHCR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      # Actions checkouts don't materialize Git-LFS by default; the ~191 MB
+      # corpus DB is an LFS file, so it MUST be fetched here. A pointer file
+      # would otherwise be baked into the image and break every data tool.
+      DOCKER_BUILDKIT: 1
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+          fetch-depth: 0
+
+      - name: Verify the OET corpus DB (fail on Git-LFS pointer)
+        run: python3 scripts/verify_db.py
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: meta
+        env:
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          IMG="ghcr.io/${REPO,,}"
+          echo "image=${IMG}" >> "${GITHUB_OUTPUT}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "tags=${IMG}:latest,${IMG}:${GITHUB_REF_NAME}" >> "${GITHUB_OUTPUT}"
+          else
+            echo "tags=${IMG}:latest,${IMG}:main" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
