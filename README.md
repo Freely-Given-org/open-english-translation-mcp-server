@@ -26,9 +26,14 @@ uvx oet-mcp-server
 
 ### Installation from Source
 
+> **Note:** the 191 MB corpus database is a **Git-LFS** file. Without
+> `git lfs pull` you get only a ~130-byte LFS pointer, and every data tool
+> fails at runtime.
+
 ```bash
 git clone https://github.com/Freely-Given-org/open-english-translation-mcp-server.git
 cd open-english-translation-mcp-server
+git lfs install && git lfs pull   # materialize the real corpus database
 uv sync
 uv run oet-mcp-server
 ```
@@ -179,8 +184,15 @@ Isolates all explicit `\add` decision codes in a passage.
 ### Recommended: use the CI-built image
 
 The `.github/workflows/docker-publish.yml` workflow materializes the LFS data,
-builds the image, and pushes it to GHCR (`ghcr.io/.../open-english-translation-mcp-server:latest`).
+builds the image, and pushes it to
+`ghcr.io/freely-given-org/open-english-translation-mcp-server`
+as `:latest` and `:main` (on pushes to `main`) and `:v*` (on version tags).
 Deploying servers then pull instead of building:
+
+> **Before this works**, the workflow must have published at least one image
+> (push to `main`, create a `v*` tag, or trigger it from the GitHub Actions
+> tab). Until then `docker compose pull` fails, so use the local-build path
+> below.
 
 ```bash
 git clone --filter=blob:none https://github.com/Freely-Given-org/open-english-translation-mcp-server.git
@@ -198,7 +210,7 @@ git lfs install && git lfs pull   # materialize the real corpus DB
 docker compose up -d --build
 ```
 
-The container exposes a Docker healthcheck ((`scripts/healthcheck.py`) that
+The container exposes a Docker healthcheck (`scripts/healthcheck.py`) that
 validates the DB and that the MCP proxy is accepting connections, so
 `docker inspect` / orchestrators report the deploy as unhealthy if the DB is
 invalid.
@@ -207,5 +219,5 @@ invalid.
 
 ## License
 
-* Code: Open Source under the MIT / GPL-3.0 License.
+* Code: Open Source under [CC0 1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/) (see the `LICENSE` file).
 * OET Text & Datasets: Creative Commons Attribution-ShareAlike ([CC-BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)) by [Freely-Given.org](https://freely-given.org).

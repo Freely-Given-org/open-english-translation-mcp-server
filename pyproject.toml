@@ -3,6 +3,7 @@ name = "oet-mcp-server"
 version = "0.1.1"
 description = "Model Context Protocol (MCP) Server for the Open English Translation of the Bible (OET)"
 readme = "README.md"
+license = "CC0-1.0"
 authors = [
     { name = "Robert Hunt", email = "Freely.Given.org+OET.MCP@gmail.com" }
 ]
