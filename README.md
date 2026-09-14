@@ -2,6 +2,8 @@
 
 An official **Model Context Protocol (MCP)** server providing Large Language Models (LLMs) with high-speed, structured access to the **Open English Translation (OET)** of the Bible.
 
+The OET design specifications are at [OET.Bible](https://OET.Bible). The OET text is available on [GitHub here](https://github.com/Freely-Given-org/OpenEnglishTranslation--OET).
+
 ---
 
 ## What Makes the OET Different?
@@ -220,4 +222,4 @@ invalid.
 ## License
 
 * Code: Open Source under [CC0 1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/) (see the `LICENSE` file).
-* OET Text & Datasets: Creative Commons Attribution-ShareAlike ([CC-BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)) by [Freely-Given.org](https://freely-given.org).
+* [OET Text & Datasets](https://github.com/Freely-Given-org/OpenEnglishTranslation--OET): Creative Commons Attribution-ShareAlike ([CC-BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)) by [Freely-Given.org](https://freely-given.org).
