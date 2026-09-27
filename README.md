@@ -15,6 +15,9 @@ The OET design specifications are at [OET.Bible](https://OET.Bible). The OET tex
    * Every word token is cross-linked via TSV datasets to Hebrew/Aramaic (`UHB`) and Greek (`SR-GNT`) dictionary entries, lemmas, Strong's numbers, morphological tags, and canonical gloss distributions.
 3. **Explicit Translation Decision Tags (`\add`)**:
    * Encodes the exact reason for every addition or divergence (`@` for referent replacements, `≈` for rewordings, `#` for number changes, `%` for speech shifts, `^` for opposite phrasing, `?` for uncertainty, `≈`/`^`/`→` for Hebrew poetic parallelism, and `⇔` for clause re-ordering).
+4. **Readable Text by Default**:
+   * The USFM markers of the published text are not useful to a model, so the served text is prose: character formatting (`\it`, `\bd`, `\sup`, `\sig`, `\qs`, `\jmp`), poetry line markers (`\q1`, `\p`, `\li1`), translator footnotes, figures, and performance directions are resolved when the database is built, while `\add` decision codes become `[≈:…]` annotations in the annotated view.
+   * The decisions themselves stay queryable, and the untouched USFM of any passage is available on request with `include_raw`.
 
 ---
 
@@ -85,7 +88,7 @@ Or for local development:
 
 | URI Pattern | Description |
 | :--- | :--- |
-| `oet://catalog` | Lists all 66+ biblical books, chapter counts, testaments, and translation status. |
+| `oet://catalog` | Lists all 66 canonical biblical books plus the 15 deuterocanonical books, with chapter counts, testaments, and translation status. |
 | `oet://metadata/rv` | Translation philosophy and `\add` decision encoding guide for OET-RV. |
 | `oet://metadata/lv` | Markup guide for OET-LV (added copulas, untranslated particles, direct objects). |
 | `oet://formats` | Complete specification of OET encoding formats and special character codes. |
@@ -103,6 +106,7 @@ Retrieve scripture in parallel side-by-side, readers, literal, or interlinear ta
   * `reference` (*string*, required): e.g. `"John 1:1-5"`, `"Rom 8:28"`, `"Gen 1:1"`.
   * `version` (*string*): `"parallel"`, `"rv"`, `"lv"`, or `"interlinear"`.
   * `include_notes` (*bool*): Attach translator footnotes (`TD:`, `TC:`) and cross-references.
+  * `include_raw` (*bool*): Include the original USFM markers in `rv_esfm` / `lv_esfm` (JSON only). Off by default, so that a model reads plain text.
   * `format` (*string*): `"markdown"` or `"json"`.
   * `show_decision_codes` (*bool*): Reveal inline decision tags (`[@referent]`, `[≈rewording]`).
 
@@ -168,6 +172,7 @@ Isolates all explicit `\add` decision codes in a passage.
 | `≡` | Elided Repetition | Repeated elided word for clarity | `\add ≡pursued\add*` |
 | `&` | Added Owner | Possessive added for naturalness | `\add &his\add*` |
 | `?` | Uncertainty Marker | Translator doubt regarding intent | `\add ?in the clouds\add*` |
+| `!` | Alternate Name | Familiar/traditional name added in parentheses after an OET distinctive name | `\add !(Moses)\add*` |
 | `≈` *(line)* | Synonymous Parallelism | Second poetic line reiterates first | `\q1 ≈Yahweh gives comfort` |
 | `^` *(line)* | Antithetic Parallelism | Second poetic line states contrast | `\q1 ^but Israel will fall` |
 | `→` *(line)* | Synthetic Parallelism | Second poetic line reaches result | `\q1 →and he answered` |

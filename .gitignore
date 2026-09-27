@@ -55,6 +55,10 @@ htmlcov/
 .tox/
 .nox/
 
+# SQLite sidecar files (the corpus DB is built in WAL mode)
+*.db-wal
+*.db-shm
+
 # IDE & OS
 .DS_Store
 *.swp

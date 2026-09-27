@@ -53,6 +53,7 @@ The **OET Readers' Version (OET-RV)** is designed to be an easy-to-read, natural
    - `%`: **Person Shift** (Flattening multi-nested direct quotes into clear indirect speech).
    - `^`: **Opposite Phrasing** (Phrasing negative constructions positively for modern comprehension).
    - `?`: **Uncertainty Marker** (Indicates translator doubt regarding original intent).
+   - `!`: **Alternate (Traditional) Name** (e.g. giving the familiar name in parentheses after a distinctive OET name, as in 'Mosheh (Moses)').
 3. **Hebrew Poetic Parallelism**:
    - `≈`: Synonymous parallelism (second poetic line reiterates the first).
    - `^`: Antithetic parallelism (second poetic line states the contrast).
@@ -242,7 +243,8 @@ def get_passage(
     version: Literal["parallel", "rv", "lv", "interlinear"] = "parallel",
     include_notes: bool = True,
     format: Literal["markdown", "json"] = "markdown",
-    show_decision_codes: bool = False
+    show_decision_codes: bool = False,
+    include_raw: bool = False
 ) -> str:
     """
     Retrieve Scripture from the Open English Translation (OET).
@@ -259,11 +261,15 @@ def get_passage(
         include_notes: Whether to attach translator footnotes and cross-references.
         format: Output format ('markdown' or 'json').
         show_decision_codes: If true, reveals inline decision codes (e.g. [@referent], [≈rewording], [+the]).
+        include_raw: If true (json format only), also returns the original ESFM markup in
+            rv_esfm / lv_esfm, e.g. "\\add !(Jericho)\\add*". Useful for studying how a
+            passage is encoded; the default text has all markup removed.
     """
     res = db.get_passage(
         reference=reference,
         version=version,
         include_notes=include_notes,
+        include_raw=include_raw,
         format=format,
         show_decision_codes=show_decision_codes
     )

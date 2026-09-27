@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 
 class DecisionItem(BaseModel):
-    code: str = Field(description="OET decision code character, e.g. '@', '≈', '+', '=', '<', '>', '≡', '&', '*', '#', '%', '^', '?'")
+    code: str = Field(description="OET decision code character, e.g. '@', '≈', '+', '=', '<', '>', '≡', '&', '*', '#', '%', '^', '?', '!'")
     type: str = Field(description="Human readable name of the translation decision category")
     text: Optional[str] = Field(default=None, description="The English text affected by this decision")
     description: Optional[str] = Field(default=None, description="Explanation of why this decision was made")
@@ -51,6 +51,8 @@ class VerseModel(BaseModel):
     lv_text: Optional[str] = Field(default=None, description="Clean Literal Version text")
     rv_annotated: Optional[str] = Field(default=None, description="Readers' Version with markup decisions")
     lv_annotated: Optional[str] = Field(default=None, description="Literal Version with untranslated & added words")
+    rv_esfm: Optional[str] = Field(default=None, description="Raw OET-RV ESFM source, only when include_raw is set")
+    lv_esfm: Optional[str] = Field(default=None, description="Raw OET-LV ESFM source, only when include_raw is set")
     decisions: List[DecisionItem] = Field(default_factory=list)
     has_missing_verse: bool = False
     has_poetry_parallel: bool = False

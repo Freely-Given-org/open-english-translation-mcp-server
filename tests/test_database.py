@@ -101,6 +101,102 @@ def test_get_catalog(db):
     assert jhn.lv_available is True
 
 
+def test_every_catalog_book_resolves_to_verses(db):
+    # Books are stored under the canonical OET code, so all 66 must be reachable
+    missing = [b.book_code for b in db.get_catalog() if not db.get_passage(b.book_code).verses]
+    assert missing == []
+
+
+@pytest.mark.parametrize("ref,code", [
+    ("1 Chronicles 1:1", "CH1"),
+    ("1CH.1.1", "CH1"),
+    ("1 Corinthians 13:4", "CO1"),
+    ("2CO.13.4", "CO2"),
+    ("James 1:1", "JAM"),
+    ("Ezekiel 1:1", "EZE"),
+    ("Jude 1", "JDE"),
+    ("1 Peter 1:1", "PE1"),
+    ("1 John 1:1", "JN1"),
+    ("2 Timothy 3:16", "TI2"),
+])
+def test_numbered_books_are_reachable(db, ref, code):
+    passage = db.get_passage(ref)
+    assert passage.book_code == code
+    assert passage.verses
+
+
+@pytest.mark.parametrize("code", ["CH1", "SA1", "KI2", "CO1", "EZE", "JAM", "JDE", "JN3", "PE2", "TH1", "TI2"])
+def test_bare_canonical_codes_resolve(db, code):
+    assert db.get_passage(code).verses
+
+
+DEUTEROCANONICAL_CODES = [
+    "TOB", "JDT", "ESG", "ES1", "ES2", "DAG", "BAR", "MAN",
+    "PS2", "WIS", "SIR", "MA1", "MA2", "MA3", "MA4",
+]
+
+
+def test_deuterocanonical_books_are_cataloged(db):
+    cat = db.get_catalog()
+    codes = [b.book_code for b in cat]
+    assert codes[:66] == [b.book_code for b in cat if b.canonical_order <= 66]
+    assert set(DEUTEROCANONICAL_CODES) <= set(codes)
+    # They follow the canonical books, keeping the canonical ordering stable
+    assert codes[66:] == DEUTEROCANONICAL_CODES
+
+    tob = next(b for b in cat if b.book_code == "TOB")
+    assert tob.english_name == "Tobit"
+    assert tob.testament == "OT"
+    assert tob.rv_available is True
+    assert tob.lv_available is False  # Readers' Version only so far
+
+
+@pytest.mark.parametrize("code", DEUTEROCANONICAL_CODES)
+def test_deuterocanonical_books_are_reachable(db, code):
+    assert db.normalize_book(code) == code
+    passage = db.get_passage(f"{code}.1.1")
+    assert passage.book_code == code
+    assert passage.verses
+    assert passage.verses[0].rv_text
+
+
+@pytest.mark.parametrize("name,code", [
+    ("Tobit", "TOB"),
+    ("Judith", "JDT"),
+    ("1 Esdras 1:1", "ES1"),
+    ("2 Esdras 1:1", "ES2"),
+    ("Additions to Esther", "ESG"),
+    ("4 Maccabees 1:1", "MA4"),
+    ("PS2", "PS2"),
+    ("1 Maccabees", "MA1"),
+    ("Ecclesiasticus", "SIR"),
+])
+def test_deuterocanonical_aliases(db, name, code):
+    assert db.get_passage(name).book_code == code
+
+
+def test_bare_code_wins_over_book_plus_chapter(db):
+    # "PS2" is Psalm 151, not Psalms 2; writing "Psalm 2" or "Ps 2" still means Psalms 2
+    assert db.get_passage("PS2").book_code == "PS2"
+    assert db.get_passage("Psalm 2").book_code == "PSA"
+    assert db.get_passage("Ps 2").verses[0].verse_id == "PSA.2.1"
+
+
+def test_judith_is_not_confused_with_jude(db):
+    assert db.normalize_book("Judith") == "JDT"
+    assert db.normalize_book("JUD") == "JDE"
+
+
+def test_every_verse_belongs_to_a_catalogued_book(db):
+    with db.get_connection() as conn:
+        orphans = conn.execute(
+            "SELECT count(*) FROM verses v "
+            "LEFT JOIN books b ON v.book_code = b.book_code "
+            "WHERE b.book_code IS NULL"
+        ).fetchone()[0]
+    assert orphans == 0
+
+
 def test_get_formats_reference(db):
     refs = db.get_formats_reference()
     assert len(refs) >= 10
@@ -109,3 +205,47 @@ def test_get_formats_reference(db):
     assert "≈" in codes
     assert "+" in codes
     assert "=" in codes
+    assert "!" in codes
+
+
+def test_multi_line_verses_are_complete(db):
+    # Poetry continues a verse onto \q lines; those lines must not be dropped
+    psa231 = db.get_passage("Psalms 23:1").verses[0]
+    assert psa231.rv_text.endswith("anything.")
+    assert psa231.rv_text.startswith("Yahweh is my shepherd")
+
+    psa11 = db.get_passage("Psalms 1:1").verses[0]
+    assert psa11.rv_text.startswith("A person will reap the benefits")
+    assert "scoffers" in psa11.rv_text
+
+
+def test_no_marker_survives_in_any_clean_text(db):
+    # char(92) is a backslash: no USFM marker may survive in any rendered column
+    with db.get_connection() as conn:
+        leaks = conn.execute(
+            "SELECT count(*) FROM verses WHERE "
+            + " OR ".join(
+                f"instr({col}, char(92)) > 0"
+                for col in (
+                    "rv_text_clean", "lv_text_clean",
+                    "rv_text_annotated", "lv_text_annotated",
+                )
+            )
+        ).fetchone()[0]
+    assert leaks == 0
+
+
+def test_lv_name_alternation_has_no_marker(db):
+    # The LV writes OET distinctive names as "English/(OET-name)" and used to mark the
+    # raised ayin of those names with a "\sup" marker
+    lv = db.get_passage("Acts 1:6").verses[0].lv_text
+    assert "Israaʸl/(Yisrāʼēl)" in lv
+
+
+def test_raw_esfm_is_opt_in(db):
+    plain = db.get_passage("1 Kings 16:34").verses[0]
+    assert plain.rv_esfm is None
+
+    raw = db.get_passage("1 Kings 16:34", include_raw=True).verses[0]
+    assert r"\add !(Jericho)\add*" in raw.rv_esfm
+    assert r"\q" in db.get_passage("Psalms 1:1", include_raw=True).verses[0].rv_esfm

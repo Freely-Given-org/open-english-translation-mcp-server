@@ -63,7 +63,7 @@ BOOK_ALIASES = {
     "OBA": "OBA", "OBADIAH": "OBA", "OVADYAH": "OBA", "OB": "OBA",
     "JNA": "JNA", "JONAH": "JNA", "YONAH": "JNA", "JON": "JNA", "YNA": "JNA",
     "MIC": "MIC", "MICAH": "MIC", "MIKAH": "MIC", "MC": "MIC",
-    "NAH": "NAH", "NAHUM": "NAH",
+    "NAH": "NAH", "NAHUM": "NAH", "NAM": "NAH",
     "HAB": "HAB", "HABAKKUK": "HAB", "HAVAKKUK": "HAB", "HB": "HAB",
     "ZEP": "ZEP", "ZEPHANIAH": "ZEP", "TSEFANYAH": "ZEP", "ZP": "ZEP",
     "HAG": "HAG", "HAGGAI": "HAG", "HG": "HAG",
@@ -97,6 +97,24 @@ BOOK_ALIASES = {
     "JN3": "JN3", "3JOHN": "JN3", "3YOHAN": "JN3", "3 JN": "JN3", "3 JOHN": "JN3", "3 YHN": "JN3", "3YHN": "JN3",
     "JDE": "JDE", "JUDE": "JDE", "YUDAS": "JDE", "JUD": "JDE", "YUD": "JDE",
     "REV": "REV", "REVELATION": "REV", "APOCALYPSE": "REV", "RV": "REV",
+    # Deuterocanonical (apocrypha). "JUD" is deliberately not reused for Judith,
+    # since it already resolves to Jude.
+    "TOB": "TOB", "TOBIT": "TOB", "TB": "TOB",
+    "JDT": "JDT", "JUDITH": "JDT", "JUTH": "JDT",
+    "ESG": "ESG", "ESTHERGREEK": "ESG", "ADDITIONSTOESTHER": "ESG", "ADDITIONS TO ESTHER": "ESG",
+    "ES1": "ES1", "1ESDRAS": "ES1", "1ESD": "ES1", "ESD1": "ES1", "1 ESDRAS": "ES1",
+    "ES2": "ES2", "2ESDRAS": "ES2", "2ESD": "ES2", "ESD2": "ES2", "2 ESDRAS": "ES2",
+    "DAG": "DAG", "DANIELGREEK": "DAG", "ADDITIONSTODANIEL": "DAG", "SUSANNA": "DAG",
+    "BELANDTHEDRAGON": "DAG", "BEL AND THE DRAGON": "DAG", "ADDITIONS TO DANIEL": "DAG",
+    "BAR": "BAR", "BARUCH": "BAR", "BR": "BAR",
+    "MAN": "MAN", "PRAYEROFMANASSES": "MAN", "PRAYER OF MANASSES": "MAN",
+    "PS2": "PS2", "PSALM151": "PS2", "PSALM 151": "PS2",
+    "WIS": "WIS", "WISDOMOFSOLOMON": "WIS", "WISDOM": "WIS", "WISDOM OF SOLOMON": "WIS",
+    "SIR": "SIR", "SIRACH": "SIR", "ECCLESIASTICUS": "SIR",
+    "MA1": "MA1", "1MACCABEES": "MA1", "1MAC": "MA1", "MACC1": "MA1", "1 MACCABEES": "MA1",
+    "MA2": "MA2", "2MACCABEES": "MA2", "2MAC": "MA2", "MACC2": "MA2", "2 MACCABEES": "MA2",
+    "MA3": "MA3", "3MACCABEES": "MA3", "3MAC": "MA3", "MACC3": "MA3", "3 MACCABEES": "MA3",
+    "MA4": "MA4", "4MACCABEES": "MA4", "4MAC": "MA4", "MACC4": "MA4", "4 MACCABEES": "MA4",
 }
 
 
@@ -144,7 +162,7 @@ class OETDatabase:
             return b_code, ch, v_start, ch, v_end
 
         m_full = re.match(
-            r'^((?:[1-3]\s+)?[A-Za-z]+)\s*(\d+)(?:[:.](\d+))?(?:[-–](\d+)(?:[:.](\d+))?)?$',
+            r'^((?:[1-4]\s+)?[A-Za-z]+)\s*(\d+)(?:[:.](\d+))?(?:[-–](\d+)(?:[:.](\d+))?)?$',
             ref_str
         )
         if not m_full:
@@ -154,7 +172,14 @@ class OETDatabase:
             return None, 0, 0, 0, 0
 
         b_name, ch1_str, v1_str, end_p1, end_p2 = m_full.groups()
-        b_code = self.normalize_book(b_name)
+        # A bare canonical code such as "SA1" or "PS2" also matches the "book + chapter"
+        # shape (as "SA" + chapter 1, or "PS" + chapter 2). When the whole string names a
+        # different book, read it as a book and return the whole of it.
+        if re.fullmatch(r'[A-Za-z0-9]{3}', ref_str):
+            whole_code = self.normalize_book(ref_str)
+            if whole_code and whole_code != self.normalize_book(b_name):
+                return whole_code, 1, 1, 999, 999
+        b_code = self.normalize_book(b_name) or self.normalize_book(ref_str)
         if not b_code:
             return None, 0, 0, 0, 0
 
@@ -184,11 +209,15 @@ class OETDatabase:
         version: str = "parallel",
         include_notes: bool = True,
         include_words: bool = False,
+        include_raw: bool = False,
         format: str = "markdown",
         show_decision_codes: bool = False
     ) -> PassageResponse:
         """
         Retrieves verses for a given scripture reference in RV, LV, parallel, or interlinear mode.
+
+        With include_raw, each verse also carries the original ESFM markup in rv_esfm /
+        lv_esfm; the default response carries only the cleaned and annotated text.
         """
         b_code, start_ch, start_v, end_ch, end_v = self.parse_reference(reference)
         if not b_code:
@@ -301,6 +330,8 @@ class OETDatabase:
                     lv_text=lv_txt,
                     rv_annotated=v["rv_text_annotated"],
                     lv_annotated=v["lv_text_annotated"],
+                    rv_esfm=v["rv_text_raw"] if include_raw else None,
+                    lv_esfm=v["lv_text_raw"] if include_raw else None,
                     decisions=decisions,
                     has_missing_verse=bool(v["has_missing_verse_flag"]),
                     has_poetry_parallel=bool(v["has_poetry_parallel"]),

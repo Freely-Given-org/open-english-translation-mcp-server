@@ -61,8 +61,27 @@ def check(db_path=None):
                   file=sys.stderr)
             return False
 
+        # Every verse must belong to a catalogued book, otherwise get_passage() and
+        # get_catalog() silently disagree about which books exist.
+        orphans = conn.execute(
+            "SELECT count(*) FROM verses v "
+            "LEFT JOIN books b ON v.book_code = b.book_code "
+            "WHERE b.book_code IS NULL"
+        ).fetchone()[0]
+        if orphans:
+            sample = conn.execute(
+                "SELECT DISTINCT v.book_code FROM verses v "
+                "LEFT JOIN books b ON v.book_code = b.book_code "
+                "WHERE b.book_code IS NULL LIMIT 5"
+            ).fetchall()
+            names = ", ".join(r[0] for r in sample)
+            print(f"FAIL: {orphans} verse(s) have a book_code with no row in books: {names}",
+                  file=sys.stderr)
+            return False
+
+        books = conn.execute("SELECT count(*) FROM books").fetchone()[0]
         print(f"OK: {db_path} ({db_path.stat().st_size:,} bytes, "
-              f"{verses:,} verses, {words:,} words)")
+              f"{books} books, {verses:,} verses, {words:,} words)")
         return True
     except sqlite3.Error as e:
         print(f"FAIL: error querying DB at {db_path}: {e}", file=sys.stderr)

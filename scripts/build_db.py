@@ -103,6 +103,29 @@ BOOK_NAMES = {
     "REV": ("Revelation", "Revelation", "NT", 66),
 }
 
+# Deuterocanonical books, which the OET publishes with the Hebrew Scriptures. They are
+# numbered after the 66 canonical books so that the canonical ordering stays stable, and
+# they are Readers' Version only (no Louis Irvin translation exists yet).
+DEUTEROCANONICAL_NAMES = {
+    "TOB": ("Tobit", "Tobit", "OT", 67),
+    "JDT": ("Judith", "Judith", "OT", 68),
+    "ESG": ("Esther (Greek)", "Esther (Greek)", "OT", 69),
+    "ES1": ("1 Esdras", "1 Esdras", "OT", 70),
+    "ES2": ("2 Esdras", "2 Esdras", "OT", 71),
+    "DAG": ("Daniel (Greek)", "Daniel (Greek)", "OT", 72),
+    "BAR": ("Baruch", "Baruch", "OT", 73),
+    "MAN": ("Prayer of Manasses", "Prayer of Manasses", "OT", 74),
+    "PS2": ("Psalm 151", "Psalm 151", "OT", 75),
+    "WIS": ("Wisdom of Solomon", "Wisdom of Solomon", "OT", 76),
+    "SIR": ("Sirach", "Sirach", "OT", 77),
+    "MA1": ("1 Maccabees", "1 Maccabees", "OT", 78),
+    "MA2": ("2 Maccabees", "2 Maccabees", "OT", 79),
+    "MA3": ("3 Maccabees", "3 Maccabees", "OT", 80),
+    "MA4": ("4 Maccabees", "4 Maccabees", "OT", 81),
+}
+
+ALL_BOOKS = {**BOOK_NAMES, **DEUTEROCANONICAL_NAMES}
+
 # Add standard translation decision formats
 DECISION_FORMATS = [
     ("+", "add_tag", "Added Article", "Added article ('a', 'the', 'some') for English grammatical sense", r"\add +the\add*"),
@@ -118,27 +141,165 @@ DECISION_FORMATS = [
     ("^", "add_tag", "Saying to Opposite", "Changed saying to positive/opposite for natural flow", r"\add ^always open\add*"),
     ("≈", "add_tag", "Rewording", "Reworded word/phrase/clause for modern clarity", r"\add ≈answered\add*"),
     ("?", "add_tag", "Doubt / Uncertainty", "Translator uncertain of original intent (can precede other codes)", r"\add ?in the clouds\add*"),
+    ("!", "add_tag", "Alternate (Traditional) Name", "Added the familiar/traditional name of a person or place in parentheses after the OET distinctive name", r"\add !(Moses)\add*"),
     ("≈", "line_start", "Synonymous Parallelism", "Second line of Hebrew poetic doublet repeating thought", r"\q1 ≈Yahweh gives comfort"),
     ("^", "line_start", "Antithetic Parallelism", "Second line of Hebrew poetic doublet stating contrast", r"\q1 ^but Israel will fall"),
     ("→", "line_start", "Synthetic Parallelism", "Second line of Hebrew poetic doublet reaching conclusion", r"\q1 →and he answered"),
     ("⇔", "verse_start", "Order Swapped", "Swapped first and second halves of verse for English naturalness", r"\v 10 ⇔The girls did..."),
 ]
 
+# The decision codes that may follow "\add " to introduce an \add span, e.g. "\add !(Moses)\add*"
+ADD_CODES = "+=<>≡&@*#%^≈?!"
+# A span is written "\add ...\add*", or "\+add ...\+add*" when nested inside another marker.
+# The whitespace around the code belongs to the opening marker, so it is consumed rather than
+# rendered: "\add !/Jericho\add*" yields "/Jericho", not " /Jericho".
+ADD_SPAN_RE = (
+    r'\\(?P<escape>\+?)add(?!\*)\s*'
+    r'(?P<code>[' + re.escape(ADD_CODES) + r']*)'
+    r'\s*(?P<text>.*?)'
+    r'\\(?P=escape)add\*'
+)
+
+# A verse continues onto following lines, each introduced by a line marker such as
+# "\q1", "\q2", "\p", "\m" or "\li1". The marker is stripped and the rest of the line is
+# joined onto the verse.
+# Poetry (\q1, \q2, \qa), paragraph (\p, \m, \mi, \pi, \pc), list (\li1), speaker (\sp)
+# and stanza (\b) lines continue the current verse, so they are joined onto it. The marker is
+# kept in the raw text and stripped from the rendered text here.
+LINE_MARKER_RE = re.compile(
+    r'\\(?:qa\d*|q\d*|pi\d*|li\d*|ms\d*|mr\d*|nb|pc|sp|mi|m|p|b)(?:\s+|$)'
+)
+# Section headings are numbered ("\s1", "\s2", ...), so match the number generally.
+SECTION_RE = re.compile(r'\\s\d*\s')
+# A parallelism decision is written on the marker itself: "\q1 ≈…", "\q1 →…", "\v 10 ⇔…".
+# The symbol records a decision (it is stored in the decisions table) but is not text, so
+# it is dropped from the rendered text along with the marker. "\add ≈…" is unaffected because
+# a single letter does not match the three-letter "\add".
+LINE_DECISION_SYMBOL_RE = re.compile(r'\\[a-zA-Z]\d*\s*[≈^→⇔]\s*')
+# A decision at the start of a verse is written after the "\v" marker, which parsing removes.
+VERSE_DECISION_SYMBOL_RE = re.compile(r'^[≈^→⇔]\s*')
+# A decision symbol sometimes stands on its own in the middle of a line, with no marker at
+# all ("on the day of his raging ≈anger"). It is still a decision rather than text.
+INLINE_DECISION_RE = re.compile(r'[≈^→⇔]')
+
+
+def strip_inline_decision(m: "re.Match") -> str:
+    """Drop a standalone decision symbol, keeping the code of an "\add" span.
+
+    The code of an "\add" span has to survive until the span is annotated, so a symbol that
+    belongs to an "\add" marker is left in place here and removed with the marker.
+    """
+    if re.search(r'\\(?:\+?)add\s*$', m.string[:m.start()]):
+        return m.group(0)
+    return " "
+LINE_DECISION_RE = re.compile(r'\\(?:q\d?|v\s+\d+)\s*([≈^→⇔])')
+LINE_DECISION_TYPES = {
+    "≈": ("synonymous_parallelism", "Synonymous Parallelism"),
+    "^": ("antithetic_parallelism", "Antithetic Parallelism"),
+    "→": ("synthetic_parallelism", "Synthetic Parallelism"),
+    "⇔": ("order_swapped", "Order Swapped"),
+}
+
+
+# Character formatting and editorial markers that carry no meaning for a plain-text
+# reader: the tags are dropped and the inner text kept, the same way "\em" and "\bd" are
+# already handled. "\z" notes are numbered to match their section ("\z1"), and the number
+# is optional. A "+" prefix marks an alternative rendering of a format ("\+nd spirit"), so
+# the opener and closer must agree on it. Any attribute list after a "|" is publishing
+# metadata and is dropped, as in "\jmp later|link-href="#C12V3"\jmp*".
+FORMAT_SPAN_RE = re.compile(
+    r'\\(?P<plus>\+)?(?P<tag>it|bdit|bd|bk|em|nd|sc|wh|wj|sup|sig|qs|jmp|z|zr)\d*'
+    r'(?P<oword>[a-zA-Z]*)(?P<space>\s*)'
+    r'(?P<text>.*?)'
+    r'(?:\|[^\\]*)?'
+    r'\\(?P=plus)?(?P=tag)\d*(?P<suffix>[a-zA-Z]+)?\*',
+    re.DOTALL,
+)
+# Some "\z" notes are never closed in the source, so the bare opener has to go too.
+# "\z1hilite" glues the same word onto the marker (see unwrap_format_span); an unclosed
+# version of it can survive when it sits inside another unclosed note, so allow the word.
+BARE_Z_RE = re.compile(r'\\zr?\d*[a-zA-Z]*\s+')
+# Figure blocks are captions plus image and copyright metadata, of no use in a text corpus.
+FIG_BLOCK_RE = re.compile(r'\\fig\b.*?\\fig\*', re.DOTALL)
+# "\d" holds performance directions ("For the musical director, ...") rather than text.
+DESC_BLOCK_RE = re.compile(r'\\d\s+[^\\]*')
+# Footnotes, in either shape: "\f + \fr 1:1 \ft text\f*", and "\f + \fr 1:1 \fqa Name,\f*"
+# where the note content sits inline rather than in a "\ft" part.
+FOOTNOTE_BLOCK_RE = re.compile(r'\\f\s*\+\s*\\fr\b.*?\\f\*', re.DOTALL)
+
+
+def add_space_if_attached(m: "re.Match", replacement: str) -> str:
+    """Restore a word boundary that a marker hid from the reader.
+
+    A span can be written directly against the text on either side of it: "When he\\add
+    ≈makes thunder\\add*" or "how\\add*\\nd Messiah\\nd*". Removing the marker without a
+    space would run the two words together, so one is added back. Spans that continue a
+    word keep their attachment instead: the OET writes those as a code-less "\\add" ("his
+    servant\\add s\\add*"), and emphasis markers such as "\\sup" wrap part of a word.
+    Trailing spaces are harmless because the caller normalizes whitespace afterwards.
+    """
+    if not m.start():
+        return replacement
+    previous = m.string[m.start() - 1]
+    if previous == "*" or (previous.isalpha() and replacement[:1].isalpha()):
+        return " " + replacement
+    return replacement
+
+
+def unwrap_format_span(m: "re.Match") -> str:
+    """Keep the text of a character-formatting span and drop its marker and attributes.
+
+    The OET sometimes writes a note as "\\z2hilite text\\z2hilite*", repeating the same word
+    on both sides of the note. A word that appears on both sides of the marker belongs to
+    the marker rather than the text, so it is dropped; letters that only follow the opener
+    are ordinary text and are kept.
+    """
+    text, oword, suffix = m.group("text"), m.group("oword"), m.group("suffix")
+    if not oword or oword == suffix:
+        return text
+    return oword + m.group("space") + text
+
+
+def unwrap_all_format_spans(text: str) -> str:
+    """Unwrap character-formatting spans, including ones nested inside another span."""
+    for _ in range(10):
+        unwrapped = FORMAT_SPAN_RE.sub(unwrap_format_span, text)
+        if unwrapped == text:
+            break
+        text = unwrapped
+    return text
+
 
 def clean_esfm_text(text: str) -> str:
     """Strip ESFM tags to produce clean, natural English reading text."""
-    # Remove footnotes and cross-refs
-    text = re.sub(r'\\f\s*\+\s*\\fr.*?\\ft\s*(.*?)\\f\*', '', text)
-    text = re.sub(r'\\x\s*\+\s*\\xo.*?\\xt\s*(.*?)\\x\*', '', text)
-    # Remove \add markers and their code characters
-    text = re.sub(r'\\add\s*([+=<>≡&@*#%^≈\?]*)(.*?)\\add\*', r'\2', text)
+    # Remove the parallelism symbols of line decisions, which are metadata rather than text
+    text = LINE_DECISION_SYMBOL_RE.sub(' ', text)
+    text = VERSE_DECISION_SYMBOL_RE.sub(' ', text)
+    text = INLINE_DECISION_RE.sub(strip_inline_decision, text)
+    # Remove footnotes, cross-refs and figure blocks
+    text = FOOTNOTE_BLOCK_RE.sub(' ', text)
+    text = re.sub(r'\\x\s*\+\s*\\xo.*?\\xt\s*(.*?)\\x\*', ' ', text)
+    text = FIG_BLOCK_RE.sub(' ', text)
+    # Remove \add markers and their code characters. A span without a decision code is a
+    # fragment of the surrounding word ("servant\add s\add*"), so it stays attached.
+    def unwrap_add(m):
+        if not m.group("code").strip():
+            return m.group("text")
+        return add_space_if_attached(m, m.group("text"))
+
+    text = re.sub(ADD_SPAN_RE, unwrap_add, text)
     # Remove \untr markers (in LV, untranslated words like 'the', 'DOM')
-    text = re.sub(r'\\untr\s*(.*?)\\untr\*', r'\1', text)
+    text = re.sub(r'\\untr\s*(.*?)\\untr\*', lambda m: add_space_if_attached(m, m.group(1)), text)
     # Remove \nd, \wj, \em, \bd markers
-    text = re.sub(r'\\nd\s*(.*?)\\nd\*', r'\1', text)
-    text = re.sub(r'\\wj\s*(.*?)\\wj\*', r'\1', text)
-    text = re.sub(r'\\em\s*(.*?)\\em\*', r'\1', text)
-    text = re.sub(r'\\bd\s*(.*?)\\bd\*', r'\1', text)
+    text = re.sub(r'\\nd\s*(.*?)\\nd\*', lambda m: add_space_if_attached(m, m.group(1)), text)
+    text = re.sub(r'\\wj\s*(.*?)\\wj\*', lambda m: add_space_if_attached(m, m.group(1)), text)
+    text = re.sub(r'\\em\s*(.*?)\\em\*', lambda m: add_space_if_attached(m, m.group(1)), text)
+    # Remove figure blocks, performance directions and character formatting, keeping text
+    text = DESC_BLOCK_RE.sub(' ', text)
+    text = unwrap_all_format_spans(text)
+    text = BARE_Z_RE.sub(' ', text)
+    # Remove verse-continuation line markers (\q1, \p, \li1, ...)
+    text = LINE_MARKER_RE.sub(' ', text)
     # Remove word link pipes: word¦12345 -> word
     text = re.sub(r'¦\d+', '', text)
     # Remove underscores connecting multi-word glosses: in_order_that -> in order that
@@ -150,26 +311,38 @@ def clean_esfm_text(text: str) -> str:
 
 def annotate_esfm_text(text: str, version: str = "RV") -> str:
     """Format ESFM text with human-readable markdown annotations showing translation decisions."""
-    # Strip footnotes and cross refs from inline text
-    text = re.sub(r'\\f\s*\+\s*\\fr.*?\\ft\s*(.*?)\\f\*', '', text)
-    text = re.sub(r'\\x\s*\+\s*\\xo.*?\\xt\s*(.*?)\\x\*', '', text)
-    
+    # Drop the parallelism symbols of line decisions; the decision itself is in the
+    # decisions table, and wrapping a whole poetry line in brackets would bury the text
+    text = LINE_DECISION_SYMBOL_RE.sub(' ', text)
+    text = VERSE_DECISION_SYMBOL_RE.sub(' ', text)
+    text = INLINE_DECISION_RE.sub(strip_inline_decision, text)
+    # Strip footnotes, cross refs and figure blocks from inline text
+    text = FOOTNOTE_BLOCK_RE.sub(' ', text)
+    text = re.sub(r'\\x\s*\+\s*\\xo.*?\\xt\s*(.*?)\\x\*', ' ', text)
+    text = FIG_BLOCK_RE.sub(' ', text)
+
     # Process \add with decision symbols
     def replace_add(m):
-        code = m.group(1).strip()
-        inner = m.group(2).strip()
+        code = m.group("code").strip()
+        inner = m.group("text").strip()
         if not code:
+            # a code-less span continues the surrounding word, so it stays attached
             return f"[{inner}]"
-        return f"[{code}:{inner}]"
+        return add_space_if_attached(m, f"[{code}:{inner}]")
 
-    text = re.sub(r'\\add\s*([+=<>≡&@*#%^≈\?]*)(.*?)\\add\*', replace_add, text)
+    text = re.sub(ADD_SPAN_RE, replace_add, text)
     # Process \untr
-    text = re.sub(r'\\untr\s*(.*?)\\untr\*', r'{\1}', text)
+    text = re.sub(r'\\untr\s*(.*?)\\untr\*', lambda m: add_space_if_attached(m, '{' + m.group(1) + '}'), text)
     # Strip word link IDs
     text = re.sub(r'¦\d+', '', text)
-    text = re.sub(r'\\nd\s*(.*?)\\nd\*', r'\1', text)
-    text = re.sub(r'\\wj\s*(.*?)\\wj\*', r'\1', text)
-    text = re.sub(r'\\em\s*(.*?)\\em\*', r'\1', text)
+    text = re.sub(r'\\nd\s*(.*?)\\nd\*', lambda m: add_space_if_attached(m, m.group(1)), text)
+    text = re.sub(r'\\wj\s*(.*?)\\wj\*', lambda m: add_space_if_attached(m, m.group(1)), text)
+    text = re.sub(r'\\em\s*(.*?)\\em\*', lambda m: add_space_if_attached(m, m.group(1)), text)
+    # Drop character formatting and editorial markers, keeping their text
+    text = DESC_BLOCK_RE.sub(' ', text)
+    text = unwrap_all_format_spans(text)
+    text = BARE_Z_RE.sub(' ', text)
+    text = LINE_MARKER_RE.sub(' ', text)
     text = text.replace('_', ' ')
     text = re.sub(r'\s+', ' ', text).strip()
     return text
@@ -198,10 +371,19 @@ def extract_decisions(raw_text: str) -> list:
             "description": "Hebrew poetic antithetic parallelism"
         })
 
+    # Parallelism decisions written on a line marker: "\q1 ≈…", "\q1 →…", "\v 10 ⇔…"
+    for m in LINE_DECISION_RE.finditer(raw_text):
+        kind, description = LINE_DECISION_TYPES[m.group(1)]
+        decisions.append({
+            "code": m.group(1),
+            "type": kind,
+            "description": description
+        })
+
     # Find all \add occurrences
-    for m in re.finditer(r'\\add\s*([+=<>≡&@*#%^≈\?]*)(.*?)\\add\*', raw_text):
-        code = m.group(1).strip()
-        content = re.sub(r'¦\d+', '', m.group(2)).replace('_', ' ').strip()
+    for m in re.finditer(ADD_SPAN_RE, raw_text):
+        code = m.group("code").strip()
+        content = re.sub(r'¦\d+', '', m.group("text")).replace('_', ' ').strip()
         code_desc = {
             "+": "Added Article",
             "=": "Added Copula",
@@ -215,7 +397,8 @@ def extract_decisions(raw_text: str) -> list:
             "%": "Person / Direct Speech Shift",
             "^": "Saying to Opposite",
             "≈": "Rewording for Modern Fluency",
-            "?": "Uncertain / Probable Reading"
+            "?": "Uncertain / Probable Reading",
+            "!": "Alternate (Traditional) Name"
         }.get(code, "Added Information")
         decisions.append({
             "code": code,
@@ -235,13 +418,17 @@ def parse_esfm_file(filepath: Path, version: str):
     with open(filepath, "r", encoding="utf-8") as f:
         content = f.read()
 
-    book_code = None
-    m_id = re.search(r'\\id\s+([A-Z0-9]{3})', content)
-    if m_id:
-        book_code = m_id.group(1)
+    # The filename carries the canonical OET book code (CH1, EZE, JAM, JDE, ...), which is
+    # what BOOK_NAMES and the word tables use. The in-file "\id" marker spells some of the
+    # same books differently (1CH, EZK, JAS, JUD, ...), so only use it as a fallback.
+    book_code = filepath.stem
+    prefix = f"OET-{version}_"
+    if book_code.startswith(prefix):
+        book_code = book_code[len(prefix):]
     else:
-        fname = filepath.stem
-        book_code = fname.replace(f"OET-{version}_", "")
+        m_id = re.search(r'\\id\s+([A-Za-z0-9]{3})', content)
+        if m_id:
+            book_code = m_id.group(1).upper()
 
     book_meta = {
         "book_code": book_code,
@@ -257,6 +444,73 @@ def parse_esfm_file(filepath: Path, version: str):
     current_section = None
     lines = content.splitlines()
 
+    # A verse's text can span several source lines: the first begins with "\v N" and the
+    # rest continue it as poetry ("\q1", "\q2"), paragraph ("\p", "\m", "\mi"), or list
+    # ("\li1") lines. Those lines have to be joined onto the verse, otherwise most of the
+    # poetic books (Psalms, Proverbs 10-31, Song of Songs, ...) keep only their first line.
+    pending_verse = None  # (verse label, list of text fragments)
+
+    def flush_verse():
+        """Finalize the verse being accumulated, if any."""
+        nonlocal pending_verse
+        if pending_verse is None:
+            return
+        v_num_str, fragments = pending_verse
+        pending_verse = None
+        v_text_raw = " ".join(f for f in fragments if f).strip()
+
+        v_clean_num = re.split(r'[-–,]', v_num_str)[0]
+        try:
+            verse_num = int(v_clean_num)
+        except ValueError:
+            verse_num = 1
+
+        verse_id = f"{book_code}.{current_chapter}.{v_num_str}"
+
+        # Extract footnotes
+        for fn in re.finditer(r'\\f\s*\+\s*\\fr\s*(.*?)\\ft\s*(.*?)\\f\*', v_text_raw):
+            fr = fn.group(1).strip()
+            ft = fn.group(2).strip()
+            category = "General"
+            if ft.startswith("TD:"):
+                category = "TD"
+            elif ft.startswith("TC:"):
+                category = "TC"
+            elif ft.startswith("Hist:"):
+                category = "Hist"
+            elif ft.startswith("Fig:"):
+                category = "Fig"
+            notes.append((verse_id, version, "footnote", category, fr, ft))
+
+        # Extract cross-references
+        for xr in re.finditer(r'\\x\s*\+\s*\\xo\s*(.*?)\\xt\s*(.*?)\\x\*', v_text_raw):
+            xo = xr.group(1).strip()
+            xt = xr.group(2).strip()
+            notes.append((verse_id, version, "xref", "General", xo, xt))
+
+        clean = clean_esfm_text(v_text_raw)
+        annotated = annotate_esfm_text(v_text_raw, version)
+        decisions = extract_decisions(v_text_raw)
+        has_missing = 1 if "◘" in v_text_raw else 0
+        has_parallel = 1 if any(p in v_text_raw for p in ["≈", "→"]) else 0
+        has_swap = 1 if "⇔" in v_text_raw else 0
+
+        verses.append({
+            "verse_id": verse_id,
+            "book_code": book_code,
+            "chapter": current_chapter,
+            "verse": verse_num,
+            "verse_label": v_num_str,
+            "raw": v_text_raw,
+            "clean": clean,
+            "annotated": annotated,
+            "decisions": decisions,
+            "has_missing": has_missing,
+            "has_parallel": has_parallel,
+            "has_swap": has_swap,
+            "section": current_section
+        })
+
     for line in lines:
         line = line.strip()
         if not line:
@@ -271,72 +525,31 @@ def parse_esfm_file(filepath: Path, version: str):
         elif line.startswith(r'\h '):
             book_meta["title"] = line[3:].strip()
         elif line.startswith(r'\c '):
+            flush_verse()
             c_str = line[3:].split()[0]
             try:
                 current_chapter = int(c_str)
             except ValueError:
                 pass
-        elif line.startswith(r'\s1 ') or line.startswith(r'\s '):
-            heading = line.split(maxsplit=1)[1].strip()
-            current_section = heading
+        elif SECTION_RE.match(line):
+            flush_verse()
+            parts = line.split(maxsplit=1)
+            current_section = parts[1].strip() if len(parts) > 1 else None
         elif line.startswith(r'\v '):
+            flush_verse()
             parts = line[3:].split(maxsplit=1)
             if not parts:
                 continue
-            v_num_str = parts[0]
-            v_text_raw = parts[1] if len(parts) > 1 else ""
+            pending_verse = (parts[0], [parts[1] if len(parts) > 1 else ""])
+        elif pending_verse is not None:
+            # A continuation line of the verse being accumulated. Poetry (\q1, \q2),
+            # paragraph (\p, \m) and list (\li1) lines belong to the verse above them, so
+            # the line is joined on with its marker intact; the text helpers strip it.
+            if line.startswith(r'\b') or line.startswith(r'\rem'):
+                continue
+            pending_verse[1].append(line)
 
-            v_clean_num = re.split(r'[-–,]', v_num_str)[0]
-            try:
-                verse_num = int(v_clean_num)
-            except ValueError:
-                verse_num = 1
-
-            verse_id = f"{book_code}.{current_chapter}.{v_num_str}"
-
-            # Extract footnotes
-            for fn in re.finditer(r'\\f\s*\+\s*\\fr\s*(.*?)\\ft\s*(.*?)\\f\*', v_text_raw):
-                fr = fn.group(1).strip()
-                ft = fn.group(2).strip()
-                category = "General"
-                if ft.startswith("TD:"):
-                    category = "TD"
-                elif ft.startswith("TC:"):
-                    category = "TC"
-                elif ft.startswith("Hist:"):
-                    category = "Hist"
-                elif ft.startswith("Fig:"):
-                    category = "Fig"
-                notes.append((verse_id, version, "footnote", category, fr, ft))
-
-            # Extract cross-references
-            for xr in re.finditer(r'\\x\s*\+\s*\\xo\s*(.*?)\\xt\s*(.*?)\\x\*', v_text_raw):
-                xo = xr.group(1).strip()
-                xt = xr.group(2).strip()
-                notes.append((verse_id, version, "xref", "General", xo, xt))
-
-            clean = clean_esfm_text(v_text_raw)
-            annotated = annotate_esfm_text(v_text_raw, version)
-            decisions = extract_decisions(v_text_raw)
-            has_missing = 1 if "◘" in v_text_raw else 0
-            has_parallel = 1 if any(p in v_text_raw for p in ["≈", "→"]) else 0
-            has_swap = 1 if "⇔" in v_text_raw else 0
-
-            verses.append({
-                "verse_id": verse_id,
-                "book_code": book_code,
-                "chapter": current_chapter,
-                "verse": verse_num,
-                "verse_label": v_num_str,
-                "raw": v_text_raw,
-                "clean": clean,
-                "annotated": annotated,
-                "decisions": decisions,
-                "has_missing": has_missing,
-                "has_parallel": has_parallel,
-                "has_swap": has_swap,
-                "section": current_section
-            })
+    flush_verse()
 
     return book_meta, verses, notes
 
@@ -723,7 +936,7 @@ def ingest_bibles(conn: sqlite3.Connection):
 
     # Insert Books
     book_rows = []
-    for b_code, (eng_name, def_oet, testm, canon_ord) in BOOK_NAMES.items():
+    for b_code, (eng_name, def_oet, testm, canon_ord) in ALL_BOOKS.items():
         st = book_stats[b_code]
         oet_name = st["oet_name"] or def_oet
         ch_count = max(len(st["rv_chapters"]), len(st["lv_chapters"]), 1)
