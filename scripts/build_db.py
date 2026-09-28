@@ -105,7 +105,7 @@ BOOK_NAMES = {
 
 # Deuterocanonical books, which the OET publishes with the Hebrew Scriptures. They are
 # numbered after the 66 canonical books so that the canonical ordering stays stable, and
-# they are Readers' Version only (no Louis Irvin translation exists yet).
+# they are Readers' Version only.
 DEUTEROCANONICAL_NAMES = {
     "TOB": ("Tobit", "Tobit", "OT", 67),
     "JDT": ("Judith", "Judith", "OT", 68),
@@ -557,7 +557,7 @@ def parse_esfm_file(filepath: Path, version: str):
 def create_schema(conn: sqlite3.Connection):
     """Creates the SQLite tables and indices."""
     cur = conn.cursor()
-    
+
     cur.executescript("""
     DROP TABLE IF EXISTS books;
     DROP TABLE IF EXISTS sections;
@@ -716,7 +716,7 @@ def ingest_word_tables(conn: sqlite3.Connection):
     """Ingests NT and OT TSV word tables and compiles lexicon statistics."""
     cur = conn.cursor()
     print("Ingesting NT Word Table TSV...")
-    
+
     words_data = []
     lexicon_stats = defaultdict(lambda: {
         "lang": "greek",
@@ -783,7 +783,7 @@ def ingest_word_tables(conn: sqlite3.Connection):
                 if len(st["refs"]) < 50:
                     st["refs"].append(f"{book} {ch}:{v}")
 
-    print(f"Loaded {len(words_data)} NT words. Ingesting OT Word Table TSV...")
+    print(f"Loaded {len(words_data):,} NT words. Ingesting OT Word Table TSV...")
 
     if OT_TSV_PATH.exists():
         with open(OT_TSV_PATH, "r", encoding="utf-8") as f:
@@ -841,7 +841,7 @@ def ingest_word_tables(conn: sqlite3.Connection):
                 if len(st["refs"]) < 50:
                     st["refs"].append(f"{book} {ch}:{v}")
 
-    print(f"Total words collected: {len(words_data)}. Inserting into SQLite...")
+    print(f"Total words collected: {len(words_data):,}. Inserting into SQLite...")
 
     cur.executemany("""
     INSERT INTO words (
@@ -852,7 +852,7 @@ def ingest_word_tables(conn: sqlite3.Connection):
     """, words_data)
     conn.commit()
 
-    print(f"Compiling {len(lexicon_stats)} lexicon entries...")
+    print(f"Compiling {len(lexicon_stats):,} lexicon entries...")
     lex_rows = []
     lex_fts_rows = []
     for l_key, st in lexicon_stats.items():
@@ -861,7 +861,7 @@ def ingest_word_tables(conn: sqlite3.Connection):
         gloss_json = json.dumps(dict(st["glosses"].most_common(10)), ensure_ascii=False)
         refs_str = ", ".join(st["refs"])
         glosses_list = ", ".join(st["glosses"].keys())
-        
+
         lex_rows.append((
             l_key,
             st["lang"],
@@ -912,7 +912,7 @@ def ingest_bibles(conn: sqlite3.Connection):
     all_notes = []
     book_stats = defaultdict(lambda: {"rv_chapters": set(), "lv_chapters": set(), "rv_verses": 0, "lv_verses": 0, "sections": 0, "oet_name": None})
 
-    print(f"Found {len(rv_files)} RV files and {len(lv_files)} LV files.")
+    print(f"Found {len(rv_files):,} RV files and {len(lv_files):,} LV files.")
 
     for r_file in rv_files:
         b_meta, v_list, n_list = parse_esfm_file(r_file, "RV")
@@ -965,7 +965,7 @@ def ingest_bibles(conn: sqlite3.Connection):
 
     # Merge verses
     all_verse_ids = set(rv_verses_by_ref.keys()) | set(lv_verses_by_ref.keys())
-    print(f"Merging and inserting {len(all_verse_ids)} unique verses...")
+    print(f"Merging and inserting {len(all_verse_ids):,} unique verses...")
 
     verse_rows = []
     fts_rows = []
@@ -1037,7 +1037,7 @@ def ingest_bibles(conn: sqlite3.Connection):
     conn.commit()
 
     # Insert notes
-    print(f"Inserting {len(all_notes)} footnotes and cross-references...")
+    print(f"Inserting {len(all_notes):,} footnotes and cross-references...")
     cur.executemany("""
     INSERT INTO notes_and_xrefs (
         verse_id, source_version, note_type, category, caller_ref, content
