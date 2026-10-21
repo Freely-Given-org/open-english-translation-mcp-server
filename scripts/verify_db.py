@@ -23,7 +23,8 @@ DEFAULT_DB = (
     / "src" / "oet_mcp_server" / "data" / "oet_corpus.db"
 )
 
-REQUIRED_TABLES = {"books", "verses", "words", "lexicon"}
+REQUIRED_TABLES = {"books", "verses", "words", "lexicon", "word_lemmas", "lexicon_aliases",
+                   "book_metadata", "corpus_metadata", "sections", "word_alignments"}
 
 
 def check(db_path=None):
@@ -42,6 +43,9 @@ def check(db_path=None):
         return False
 
     try:
+        if conn.execute("PRAGMA user_version").fetchone()[0] != 2:
+            print("FAIL: outdated corpus schema; rebuild with scripts/build_db.py", file=sys.stderr)
+            return False
         tables = {
             row[0]
             for row in conn.execute(

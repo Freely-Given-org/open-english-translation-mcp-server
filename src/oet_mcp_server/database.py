@@ -13,6 +13,9 @@ from typing import Optional, List, Dict, Any, Tuple
 from contextlib import contextmanager
 from collections import Counter
 
+from .grammar import decode_morphology
+from .lexical import SCHEMA_VERSION, normalize_alias
+
 from .models import (
     VerseModel,
     PassageResponse,
@@ -51,7 +54,7 @@ BOOK_ALIASES = {
     "PSA": "PSA", "PSALMS": "PSA", "PSALM": "PSA", "PS": "PSA", "SONGS": "PSA",
     "PRO": "PRO", "PROVERBS": "PRO", "PR": "PRO", "PROV": "PRO",
     "ECC": "ECC", "ECCLESIASTES": "ECC", "QOH": "ECC",
-    "SNG": "SNG", "SONG": "SNG", "SONG OF SOLOMON": "SNG", "CANTICLES": "SNG", "SOS": "SNG",
+    "SONG OF SONGS": "SNG", "SONGOFSONGS": "SNG", "SNG": "SNG", "SONG": "SNG", "SONG OF SOLOMON": "SNG", "CANTICLES": "SNG", "SOS": "SNG",
     "ISA": "ISA", "ISAIAH": "ISA", "YESHAYAH": "ISA", "IS": "ISA",
     "JER": "JER", "JEREMIAH": "JER", "YERMEYAH": "JER", "JR": "JER",
     "LAM": "LAM", "LAMENTATIONS": "LAM", "LM": "LAM",
@@ -131,8 +134,11 @@ class OETDatabase:
 
     @contextmanager
     def get_connection(self):
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        conn = sqlite3.connect(f"{self.db_path.resolve().as_uri()}?mode=ro", uri=True, check_same_thread=False)
         conn.row_factory = sqlite3.Row
+        if conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
+            conn.close()
+            raise RuntimeError("Corpus schema is outdated. Rebuild with scripts/build_db.py.")
         try:
             yield conn
         finally:
@@ -153,6 +159,9 @@ class OETDatabase:
         Parse reference string into (book_code, start_chapter, start_verse, end_chapter, end_verse).
         """
         ref_str = ref_str.strip()
+        whole = self.normalize_book(ref_str)
+        if whole and (not re.search(r"\s\d", ref_str) or ref_str.upper() in BOOK_ALIASES):
+            return whole, 1, 1, 999, 999
         m_dot = re.match(r'^([A-Za-z0-9]{3})[._](\d+)[:.](\d+)(?:[-–](\d+))?$', ref_str)
         if m_dot:
             b_code = self.normalize_book(m_dot.group(1))
@@ -162,7 +171,7 @@ class OETDatabase:
             return b_code, ch, v_start, ch, v_end
 
         m_full = re.match(
-            r'^((?:[1-4]\s+)?[A-Za-z]+)\s*(\d+)(?:[:.](\d+))?(?:[-–](\d+)(?:[:.](\d+))?)?$',
+            r'^(.+?)\s*(\d+)(?:[:.](\d+))?(?:[-–](\d+)(?:[:.](\d+))?)?$',
             ref_str
         )
         if not m_full:
@@ -211,7 +220,12 @@ class OETDatabase:
         include_words: bool = False,
         include_raw: bool = False,
         format: str = "markdown",
-        show_decision_codes: bool = False
+        show_decision_codes: bool = False,
+        include_variants: bool = False,
+        include_structure: bool = False,
+        include_alignment: bool = False,
+        limit: int = 50,
+        offset: int = 0
     ) -> PassageResponse:
         """
         Retrieves verses for a given scripture reference in RV, LV, parallel, or interlinear mode.
@@ -219,10 +233,15 @@ class OETDatabase:
         With include_raw, each verse also carries the original ESFM markup in rv_esfm /
         lv_esfm; the default response carries only the cleaned and annotated text.
         """
+        self._validate_page(limit, offset)
         b_code, start_ch, start_v, end_ch, end_v = self.parse_reference(reference)
         if not b_code:
             raise ValueError(f"Could not recognize biblical reference: '{reference}'")
 
+        if min(start_ch, start_v, end_ch, end_v) < 1 or (start_ch, start_v) > (end_ch, end_v):
+            raise ValueError("Reference must use positive chapter/verse numbers and an ascending range.")
+        if version not in {"rv", "lv", "parallel", "interlinear"}:
+            raise ValueError("version must be rv, lv, parallel, or interlinear")
         with self.get_connection() as conn:
             cur = conn.cursor()
             cur.execute("SELECT * FROM books WHERE book_code = ?", (b_code,))
@@ -230,30 +249,40 @@ class OETDatabase:
             if not book_row:
                 raise ValueError(f"Book code '{b_code}' not found in database.")
 
+            if not self.normalize_book(reference):
+                verse_specified = bool(re.search(r"[:.]\d+", reference))
+                for chapter, verse in ((start_ch, start_v), (end_ch, end_v)):
+                    bounds = cur.execute("SELECT min(verse), max(verse_end) FROM verses WHERE book_code=? AND chapter=?",
+                                         (b_code, chapter)).fetchone()
+                    if bounds[0] is None or (verse_specified and not bounds[0] <= verse <= bounds[1]):
+                        raise ValueError(f"Reference endpoint {b_code} {chapter}:{verse} is unavailable; check chapter and verse bounds.")
+
             if start_ch == end_ch:
                 cur.execute("""
                 SELECT * FROM verses
-                WHERE book_code = ? AND chapter = ? AND verse >= ? AND verse <= ?
-                ORDER BY verse ASC
+                WHERE book_code = ? AND chapter = ? AND verse_end >= ? AND verse <= ?
+                ORDER BY verse ASC, verse_end ASC, verse_id ASC
                 """, (b_code, start_ch, start_v, end_v))
             else:
                 cur.execute("""
                 SELECT * FROM verses
                 WHERE book_code = ? AND (
-                    (chapter = ? AND verse >= ?) OR
+                    (chapter = ? AND verse_end >= ?) OR
                     (chapter > ? AND chapter < ?) OR
                     (chapter = ? AND verse <= ?)
                 )
-                ORDER BY chapter ASC, verse ASC
+                ORDER BY chapter ASC, verse ASC, verse_end ASC, verse_id ASC
                 """, (b_code, start_ch, start_v, start_ch, end_ch, end_ch, end_v))
 
             verse_rows = cur.fetchall()
             if not verse_rows:
-                cur.execute("""
-                SELECT * FROM verses WHERE book_code = ? AND chapter = ? ORDER BY verse ASC
-                """, (b_code, start_ch))
-                verse_rows = cur.fetchall()
+                raise ValueError(f"No verses available for '{reference}'. No substitute passage was returned.")
 
+            total_verses = len(verse_rows)
+            verse_rows = verse_rows[offset:offset + limit]
+            provenance = self._provenance(conn)
+            sources = {r["source_version"]: json.loads(r["metadata_json"]) for r in conn.execute("SELECT * FROM book_metadata WHERE book_code=?", (b_code,))}
+            provenance["book_sources"] = {version: {k: m[k] for k in ("source_file", "sha256", "source_declaration", "source_notes")} for version, m in sources.items()}
             verses_list = []
             total_footnotes = 0
             total_xrefs = 0
@@ -282,9 +311,9 @@ class OETDatabase:
                 if include_words or version.lower() == "interlinear":
                     cur.execute("""
                     SELECT * FROM words
-                    WHERE book_code = ? AND chapter = ? AND verse = ?
+                    WHERE book_code = ? AND chapter = ? AND verse = ? AND (is_selected = 1 OR ?)
                     ORDER BY word_seq ASC
-                    """, (b_code, v["chapter"], v["verse"]))
+                    """, (b_code, v["chapter"], v["verse"], include_variants))
                     for wr in cur.fetchall():
                         words_list.append(WordModel(
                             word_link_id=wr["word_link_id"],
@@ -299,7 +328,12 @@ class OETDatabase:
                             oet_gloss=wr["oet_gloss"],
                             contextual_gloss=wr["contextual_gloss"],
                             morpheme_glosses=wr["morpheme_glosses"],
-                            tags=wr["tags"]
+                            tags=wr["tags"],
+                            lang=wr["lang"], source_status=wr["source_status"],
+                            is_selected=bool(wr["is_selected"]), source_strongs=wr["source_strongs"],
+                            strongs_standard=json.loads(wr["strongs_standard_json"]),
+                            lemmas=self._word_lemmas(conn, wr["word_link_id"]),
+                            grammar=decode_morphology(wr["morphology"], wr["lang"], wr["role"])
                         ))
 
                 decisions = []
@@ -308,6 +342,8 @@ class OETDatabase:
                         raw_decs = json.loads(v["decisions_json"])
                         for d in raw_decs:
                             decisions.append(DecisionItem(
+                                source_version=d.get("source_version"),
+                                source_span=d.get("source_span"),
                                 code=d.get("code", ""),
                                 type=d.get("type", "Added Information"),
                                 text=d.get("text"),
@@ -337,7 +373,11 @@ class OETDatabase:
                     has_poetry_parallel=bool(v["has_poetry_parallel"]),
                     has_order_swap=bool(v["has_order_swap"]),
                     notes=notes_list,
-                    words=words_list
+                    words=words_list,
+                    structure=json.loads(v["structure_json"]) if include_structure else {},
+                    alignments=[dict(r) for r in conn.execute("SELECT source_version,word_link_id,word_num,text,source_start,source_end FROM word_alignments WHERE verse_id=? ORDER BY source_version,source_start", (v_id,))] if include_alignment else [],
+                    availability={ver: ("available" if v[f"{ver.lower()}_text_clean"] is not None else ("no matching source segment; check other verse groupings" if ver in sources else "version not available for this book")) for ver in ("RV", "LV")},
+                    source_url=f"https://freely-given.org/OBD/par/{b_code}/C{v['chapter']}V{v['verse']}.htm"
                 ))
 
             return PassageResponse(
@@ -349,21 +389,24 @@ class OETDatabase:
                 verses_count=len(verses_list),
                 verses=verses_list,
                 footnotes_count=total_footnotes,
-                cross_refs_count=total_xrefs
+                cross_refs_count=total_xrefs,
+                total_verses=total_verses, offset=offset,
+                next_offset=offset + len(verse_rows) if offset + len(verse_rows) < total_verses else None,
+                provenance=provenance
             )
 
-    def compare_passage(self, reference: str) -> List[ComparisonDiffItem]:
+    def compare_passage(self, reference: str, passage: Optional[PassageResponse] = None) -> List[ComparisonDiffItem]:
         """
         Isolates and computes detailed translation divergencies between OET-RV and OET-LV.
         """
-        passage = self.get_passage(reference, version="parallel", show_decision_codes=True)
+        passage = passage or self.get_passage(reference, version="parallel", show_decision_codes=True)
         diff_items = []
 
         for v in passage.verses:
             rv_raw = v.rv_annotated or ""
             lv_raw = v.lv_annotated or ""
 
-            added_lv = re.findall(r'\[\+?:?([^\]]+)\]', lv_raw)
+            added_lv = re.findall(r'\[(?:[+=<>≡&@*#%^≈?!]*:)?([^\]]+)\]', lv_raw)
             untranslated_lv = re.findall(r'\{([^}]+)\}', lv_raw)
 
             notes = []
@@ -372,7 +415,7 @@ class OETDatabase:
             if v.has_poetry_parallel:
                 notes.append("Hebrew poetic parallelism (≈) marked in Readers' Version.")
             if v.has_missing_verse:
-                notes.append("Omitted verse (◘) absent from earliest textual witnesses.")
+                notes.append("The source marks omitted text (◘); consult the translator notes for its textual basis.")
 
             diff_items.append(ComparisonDiffItem(
                 verse_id=v.verse_id,
@@ -380,7 +423,7 @@ class OETDatabase:
                 lv_text=v.lv_text or "",
                 added_words_lv=added_lv,
                 untranslated_words_lv=untranslated_lv,
-                translation_decisions_rv=v.decisions,
+                translation_decisions_rv=[d for d in v.decisions if d.source_version == "RV"],
                 syntactic_notes=" ".join(notes) if notes else None
             ))
 
@@ -391,12 +434,18 @@ class OETDatabase:
         Lookup a specific word link token by ID (e.g. 'JHNc1v1w5' or 'JHN_1:1w5').
         """
         cleaned_id = word_id.strip()
-        m_c = re.match(r'([A-Za-z0-9]{3})c(\d+)v(\d+)w(\d+)', cleaned_id, re.IGNORECASE)
+        m_c = re.fullmatch(r'([A-Za-z0-9]{3})c(\d+)v(\d+)w(\d+)', cleaned_id, re.IGNORECASE)
         if m_c:
             b, c, v, w = m_c.groups()
             cleaned_id = f"{b.upper()}_{c}:{v}w{w}"
 
         with self.get_connection() as conn:
+            numeric = re.fullmatch(r"(NT|OT):(\d+)", cleaned_id, re.IGNORECASE)
+            if numeric:
+                row = conn.execute("SELECT word_link_id FROM words WHERE word_num=? AND (lang='greek')=?", (int(numeric[2]), numeric[1].upper() == "NT")).fetchone()
+                if not row:
+                    return None
+                cleaned_id = row[0]
             cur = conn.cursor()
             cur.execute("""
             SELECT * FROM words WHERE word_link_id = ? OR ref_str = ?
@@ -406,150 +455,172 @@ class OETDatabase:
                 return None
 
             data = dict(row)
+            data["strongs_standard"] = json.loads(data.pop("strongs_standard_json"))
+            data["is_selected"] = bool(data["is_selected"])
+            data["lemmas"] = self._word_lemmas(conn, data["word_link_id"])
+            data["grammar"] = decode_morphology(data["morphology"], data["lang"], data["role"])
+            data["alignments"] = [dict(r) for r in conn.execute("SELECT verse_id,source_version,text,source_start,source_end FROM word_alignments WHERE word_link_id=? ORDER BY source_version,source_start", (data["word_link_id"],))]
+            data["provenance"] = self._provenance(conn)
             cur.execute("SELECT rv_text_clean, lv_text_clean FROM verses WHERE verse_id = ?", (f"{data['book_code']}.{data['chapter']}.{data['verse']}",))
             v_row = cur.fetchone()
             if v_row:
                 data["verse_rv"] = v_row["rv_text_clean"]
                 data["verse_lv"] = v_row["lv_text_clean"]
 
-            lemma = data.get("sr_lemma") or data.get("original_lemma")
-            if lemma:
-                cur.execute("SELECT * FROM lexicon WHERE lemma = ? OR strongs = ?", (lemma, data.get("strongs")))
-                lex = cur.fetchone()
-                if lex:
-                    data["lexicon"] = dict(lex)
-                    if lex["gloss_distribution_json"]:
-                        data["lexicon"]["gloss_distribution"] = json.loads(lex["gloss_distribution_json"])
+            lexical = [lemma for lemma in data["lemmas"] if lemma["strongs"]] or data["lemmas"]
+            data["lexicon_entries"] = [self._lexicon_model(conn.execute("SELECT * FROM lexicon WHERE lemma_key=?", (key,)).fetchone()).model_dump()
+                                       for key in dict.fromkeys(lemma["lemma_key"] for lemma in lexical)]
+            if len(data["lexicon_entries"]) == 1:
+                data["lexicon"] = data["lexicon_entries"][0]
 
             return data
 
-    def search_lemma(
-        self,
-        lemma_or_strongs: str,
-        testament: str = "all",
-        limit: int = 30
-    ) -> Dict[str, Any]:
-        """
-        Search for all occurrences of a lemma or Strong's ID across the corpus.
-        """
-        query = lemma_or_strongs.strip()
-        testament = testament.upper()
+    @staticmethod
+    def _word_lemmas(conn, word_id):
+        return [dict(r) for r in conn.execute("""
+            SELECT wl.position, l.lemma_key, l.lemma, l.lang, wl.strongs
+            FROM word_lemmas wl JOIN lexicon l USING(lemma_key)
+            WHERE wl.word_link_id=? ORDER BY wl.position
+        """, (word_id,))]
 
+    @staticmethod
+    def _resolve_lemmas(conn, query, lang="auto"):
+        q = normalize_alias(query)
+        kind = None
+        for prefix in ("strongs_ext:", "strongs:"):
+            if q.startswith(prefix):
+                kind, q = prefix[:-1], q[len(prefix):]
+                break
+        rows = conn.execute("""SELECT DISTINCT l.lemma_key, a.kind FROM lexicon_aliases a
+                               JOIN lexicon l USING(lemma_key)
+                               WHERE a.alias=? AND (?='auto' OR l.lang=?)
+                               AND (? IS NULL OR a.kind=?)""", (q, lang, lang, kind, kind)).fetchall()
+        by_kind = {}
+        for r in rows:
+            by_kind.setdefault(r["kind"], set()).add(r["lemma_key"])
+        if kind is None and "strongs" in by_kind and "strongs_ext" in by_kind and by_kind["strongs"] != by_kind["strongs_ext"]:
+            raise ValueError(f"Ambiguous identifier {query!r}; use strongs:{query} for the standard number or strongs_ext:{query} for the SR-GNT identifier.")
+        return sorted({r["lemma_key"] for r in rows})
+
+    @staticmethod
+    def _lexicon_model(row):
+        return LexiconEntry(
+            lemma_key=row["lemma_key"], lang=row["lang"], lemma=row["lemma"],
+            lemma_display=row["lemma_display"], strongs=row["strongs"],
+            strongs_ids=json.loads(row["strongs_ids_json"]), primary_gloss=row["primary_gloss"],
+            total_occurrences=row["total_occurrences"],
+            unused_variant_occurrences=row["unused_variant_occurrences"],
+            unglossed_occurrences=row["total_occurrences"] - sum(json.loads(row["gloss_distribution_json"]).values()),
+            gloss_distribution=json.loads(row["gloss_distribution_json"]),
+            first_occurrences_refs=row["first_occurrences_refs"].split(", ") if row["first_occurrences_refs"] else [])
+
+    def search_lemma(self, lemma_or_strongs: str, testament: str = "all", limit: int = 30,
+                     include_variants: bool = False, book: Optional[str] = None,
+                     offset: int = 0, sampling: str = "representative") -> Dict[str, Any]:
+        """Retrieve scoped word occurrences, with exact totals and bounded samples."""
+        self._validate_page(limit, offset)
+        if testament.upper() not in {"ALL", "OT", "NT"}:
+            raise ValueError("testament must be all, OT, or NT")
+        if sampling not in {"representative", "canonical"}:
+            raise ValueError("sampling must be representative or canonical")
+        code = self.normalize_book(book) if book else None
+        if book and not code:
+            raise ValueError(f"Unknown book: {book}")
         with self.get_connection() as conn:
-            cur = conn.cursor()
-            cur.execute("""
-            SELECT * FROM lexicon
-            WHERE lemma = ? OR strongs = ? OR lemma_display = ?
-            """, (query, query, query))
-            lex_row = cur.fetchone()
-
-            sql = """
-            SELECT w.*, v.rv_text_clean, v.lv_text_clean, b.testament
-            FROM words w
-            JOIN verses v ON (w.book_code = v.book_code AND w.chapter = v.chapter AND w.verse = v.verse)
-            JOIN books b ON w.book_code = b.book_code
-            WHERE (w.sr_lemma = ? OR w.strongs = ? OR w.original_lemma = ? OR w.original_word = ?)
-            """
-            params = [query, query, query, query]
-            if testament in ["OT", "NT"]:
-                sql += " AND b.testament = ?"
-                params.append(testament)
-            sql += " ORDER BY b.canonical_order ASC, w.chapter ASC, w.verse ASC LIMIT ?"
-            params.append(limit)
-
-            cur.execute(sql, params)
-            rows = cur.fetchall()
-
-            occurrences = []
-            gloss_counter = Counter()
-
-            for r in rows:
-                gloss = r["oet_gloss"] or r["vlt_gloss"] or ""
-                if gloss:
-                    gloss_counter[gloss] += 1
-                occurrences.append({
-                    "ref": f"{r['book_code']} {r['chapter']}:{r['verse']} (word {r['word_seq']})",
-                    "word_link_id": r["word_link_id"],
-                    "original_word": r["original_word"],
-                    "morphology": r["morphology"],
-                    "oet_gloss": r["oet_gloss"],
-                    "rv_text": r["rv_text_clean"],
-                    "lv_text": r["lv_text_clean"]
-                })
-
-            result = {
-                "query": query,
-                "testament_filter": testament,
-                "total_found_in_sample": len(occurrences),
-                "gloss_distribution_in_sample": dict(gloss_counter.most_common(10)),
-                "occurrences": occurrences
-            }
-
-            if lex_row:
-                result["lexicon_info"] = {
-                    "lang": lex_row["lang"],
-                    "lemma": lex_row["lemma"],
-                    "lemma_display": lex_row["lemma_display"],
-                    "strongs": lex_row["strongs"],
-                    "primary_gloss": lex_row["primary_gloss"],
-                    "total_canonical_occurrences": lex_row["total_occurrences"],
-                    "canonical_gloss_distribution": json.loads(lex_row["gloss_distribution_json"]) if lex_row["gloss_distribution_json"] else {}
-                }
-
+            keys = self._resolve_lemmas(conn, lemma_or_strongs)
+            result = dict(query=lemma_or_strongs, testament_filter=testament.upper(), book=code,
+                          include_variants=include_variants, sampling=sampling, offset=offset,
+                          count_scope="Matching source word occurrences; glosses are from OET-LV word tables, not RV",
+                          total_matches=0, total_found_in_sample=0, next_offset=None,
+                          gloss_distribution_in_sample={}, occurrences=[], resolved_lemma_keys=keys)
+            if not keys:
+                return result
+            placeholders = ",".join("?" for _ in keys)
+            sql = f"""SELECT w.*, b.canonical_order FROM words w JOIN books b USING(book_code)
+                      WHERE EXISTS (SELECT 1 FROM word_lemmas wl WHERE wl.word_link_id=w.word_link_id
+                                    AND wl.lemma_key IN ({placeholders}))
+                      AND (w.is_selected=1 OR ?) AND (?='ALL' OR b.testament=?)
+                      AND (? IS NULL OR w.book_code=?)"""
+            params = [*keys, include_variants, testament.upper(), testament.upper(), code, code]
+            result["total_matches"] = conn.execute(f"SELECT count(*) FROM ({sql})", params).fetchone()[0]
+            # Round-robin across books gives broad coverage; canonical order is available for exhaustive paging.
+            order = "canonical_order, chapter, verse, word_seq"
+            if sampling == "representative":
+                sql = f"SELECT *, row_number() OVER (PARTITION BY book_code ORDER BY chapter,verse,word_seq) AS book_position FROM ({sql})"
+                order = "book_position, " + order
+            rows = conn.execute(sql + f" ORDER BY {order} LIMIT ? OFFSET ?", [*params, limit, offset]).fetchall()
+            counter = Counter()
+            for row in rows:
+                context = conn.execute("SELECT rv_text_clean,lv_text_clean FROM verses WHERE book_code=? AND chapter=? AND verse=? ORDER BY verse_id LIMIT 1",
+                                       (row["book_code"],row["chapter"],row["verse"])).fetchone()
+                counter[row["oet_gloss"] or ""] += 1
+                result["occurrences"].append(dict(ref=f"{row['book_code']} {row['chapter']}:{row['verse']} (word {row['word_seq']})",
+                    word_link_id=row["word_link_id"], original_word=row["original_word"], morphology=row["morphology"],
+                    oet_gloss=row["oet_gloss"], is_selected=bool(row["is_selected"]), source_status=row["source_status"],
+                    rv_text=context[0] if context else None, lv_text=context[1] if context else None))
+            result["total_found_in_sample"] = len(rows)
+            result["gloss_distribution_in_sample"] = dict(counter)
+            if offset + len(rows) < result["total_matches"]:
+                result["next_offset"] = offset + len(rows)
+            if len(keys) == 1:
+                lex = self._lexicon_model(conn.execute("SELECT * FROM lexicon WHERE lemma_key=?", (keys[0],)).fetchone())
+                result["lexicon_info"] = dict(lang=lex.lang, lemma=lex.lemma, lemma_display=lex.lemma_display,
+                    strongs=lex.strongs, primary_gloss=lex.primary_gloss,
+                    total_canonical_occurrences=lex.total_occurrences,
+                    unused_variant_occurrences=lex.unused_variant_occurrences,
+                    canonical_gloss_distribution=lex.gloss_distribution,
+                    count_scope=lex.count_scope + "; entire corpus, independent of search filters")
             return result
 
     def get_lexicon_entry(self, query: str, lang: str = "auto") -> Optional[LexiconEntry]:
-        """
-        Retrieves a rich lexicon entry by lemma or Strong's ID.
-        """
-        q = query.strip()
+        if lang not in {"auto", "greek", "hebrew", "aramaic"}:
+            raise ValueError("lang must be auto, greek, hebrew, or aramaic")
         with self.get_connection() as conn:
-            cur = conn.cursor()
-            sql = "SELECT * FROM lexicon WHERE lemma = ? OR strongs = ? OR lemma_display = ?"
-            params = [q, q, q]
-            if lang.lower() in ["greek", "hebrew"]:
-                sql += " AND lang = ?"
-                params.append(lang.lower())
-            cur.execute(sql, params)
-            row = cur.fetchone()
-            if not row:
-                cur.execute("""
-                SELECT l.* FROM lexicon_fts f
-                JOIN lexicon l ON f.rowid = l.rowid
-                WHERE lexicon_fts MATCH ? LIMIT 1
-                """, (q,))
-                row = cur.fetchone()
-                if not row:
-                    return None
+            keys = self._resolve_lemmas(conn, query, lang)
+            if not keys:
+                return None
+            if len(keys) > 1:
+                raise ValueError(f"Multiple lemma entries match {query!r}; use a lemma key: {', '.join(keys)}. search_lemma can retrieve their combined occurrences.")
+            return self._lexicon_model(conn.execute("SELECT * FROM lexicon WHERE lemma_key=?", (keys[0],)).fetchone())
 
-            gloss_dist = json.loads(row["gloss_distribution_json"]) if row["gloss_distribution_json"] else {}
-            refs = [r.strip() for r in row["first_occurrences_refs"].split(",") if r.strip()] if row["first_occurrences_refs"] else []
-
-            return LexiconEntry(
-                lemma_key=row["lemma_key"],
-                lang=row["lang"],
-                lemma=row["lemma"],
-                lemma_display=row["lemma_display"],
-                strongs=row["strongs"],
-                primary_gloss=row["primary_gloss"],
-                total_occurrences=row["total_occurrences"],
-                gloss_distribution=gloss_dist,
-                first_occurrences_refs=refs
-            )
+    @staticmethod
+    def _validate_page(limit, offset=0):
+        if not 1 <= limit <= 100 or offset < 0:
+            raise ValueError("limit must be 1–100 and offset must be nonnegative")
 
     def search_text(
         self,
         query: str,
         version: str = "both",
         testament: str = "all",
-        limit: int = 20
-    ) -> List[Dict[str, Any]]:
+        limit: int = 20,
+        offset: int = 0,
+        book: Optional[str] = None,
+        with_metadata: bool = False
+    ) -> Any:
         """
         Full-text search using FTS5 virtual table.
         """
+        self._validate_page(limit, offset)
         q = query.strip()
+        if not q:
+            raise ValueError("Provide a word or quoted phrase to search.")
+        # Treat user input as words/phrases, not executable FTS syntax.
+        terms = re.findall(r'"([^"\n]+)"|([^\s"]+)', q)
+        q = " AND ".join('"' + (phrase or word).replace('"', '""') + '"' for phrase, word in terms)
+        if not q:
+            raise ValueError("Provide a word or quoted phrase to search.")
         version = version.lower()
+        if version not in {"both", "rv", "lv"}:
+            raise ValueError("version must be both, rv, or lv")
+        columns = "{rv_text_clean lv_text_clean}" if version == "both" else version + "_text_clean"
+        q = f"{columns} : ({q})"
+        code = self.normalize_book(book) if book else None
+        if book and not code:
+            raise ValueError(f"Unknown book: {book}")
         testament = testament.upper()
+        if testament not in {"ALL", "OT", "NT"}:
+            raise ValueError("testament must be all, OT, or NT")
 
         with self.get_connection() as conn:
             cur = conn.cursor()
@@ -564,8 +635,12 @@ class OETDatabase:
             if testament in ["OT", "NT"]:
                 sql += " AND b.testament = ?"
                 params.append(testament)
-            sql += " ORDER BY b.canonical_order ASC, v.chapter ASC, v.verse ASC LIMIT ?"
-            params.append(limit)
+            if code:
+                sql += " AND b.book_code = ?"
+                params.append(code)
+            total = conn.execute(f"SELECT count(*) FROM ({sql})", params).fetchone()[0] if with_metadata else None
+            sql += " ORDER BY b.canonical_order ASC, v.chapter ASC, v.verse ASC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
 
             cur.execute(sql, params)
             rows = cur.fetchall()
@@ -584,6 +659,10 @@ class OETDatabase:
                     item["lv_text"] = r["lv_text_clean"]
                 results.append(item)
 
+            if with_metadata:
+                return dict(query=query, version=version, testament=testament, matches=results,
+                            offset=offset, total_matches=total,
+                            next_offset=offset+len(results) if offset+len(results)<total else None)
             return results
 
     def get_translation_decisions(self, reference: str) -> List[Dict[str, Any]]:
@@ -601,6 +680,31 @@ class OETDatabase:
                     "decisions": [d.model_dump() for d in v.decisions]
                 })
         return results
+
+    @staticmethod
+    def _provenance(conn):
+        return {r["key"]: json.loads(r["value"]) for r in conn.execute("SELECT * FROM corpus_metadata")}
+
+    def get_book_context(self, book: str, limit: int = 50, offset: int = 0):
+        self._validate_page(limit, offset)
+        code = self.normalize_book(book)
+        if not code:
+            raise ValueError(f"Unknown book: {book}")
+        with self.get_connection() as conn:
+            sources = {r["source_version"]: json.loads(r["metadata_json"]) for r in conn.execute("SELECT * FROM book_metadata WHERE book_code=?", (code,))}
+            total = conn.execute("SELECT count(*) FROM sections WHERE book_code=?", (code,)).fetchone()[0]
+            sections = [dict(r) for r in conn.execute("SELECT * FROM sections WHERE book_code=? ORDER BY source_version,chapter,start_verse LIMIT ? OFFSET ?", (code,limit,offset))]
+            return dict(book_code=code, sources=sources, sections=sections, total_sections=total,
+                        next_offset=offset+len(sections) if offset+len(sections)<total else None,
+                        provenance=self._provenance(conn))
+
+    def get_section(self, section_id: str, limit: int = 50, offset: int = 0):
+        with self.get_connection() as conn:
+            section = conn.execute("SELECT * FROM sections WHERE section_id=?", (section_id,)).fetchone()
+            if not section:
+                raise ValueError("Unknown section ID; use get_book_context to list available sections.")
+            ref = f"{section['book_code']} {section['chapter']}:{section['start_verse']}-{section['end_chapter']}:{section['end_verse']}"
+        return self.get_passage(ref, include_structure=True, limit=limit, offset=offset)
 
     def get_catalog(self) -> List[CatalogBook]:
         """

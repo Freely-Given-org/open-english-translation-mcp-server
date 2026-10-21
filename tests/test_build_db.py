@@ -123,7 +123,8 @@ def test_continuation_lines_contribute_their_decisions(tmp_path):
     _, verses, _ = parse_esfm_file(_write_esfm(tmp_path, POETRY_VERSE), "RV")
     decisions = verses[0]["decisions"]
     assert [d["text"] for d in decisions if d["code"] == "≈"] == ["around where"]
-    assert verses[0]["has_parallel"] == 1
+    # Rewording inside an add span does not assert a poetic parallelism relation.
+    assert verses[0]["has_parallel"] == 0
 
 
 def test_last_verse_is_flushed_at_end_of_file(tmp_path):

@@ -6,18 +6,26 @@ The OET design specifications are at [OET.Bible](https://OET.Bible). The OET tex
 
 ---
 
-## What Makes the OET Different?
+## What the server provides
 
-1. **Dual-Stream Parallel Translation**:
-   * **Readers' Version (OET-RV)**: Natural, idiomatic, thought-for-thought modern English designed for macro-level discourse comprehension and fluency.
-   * **Literal Version (OET-LV)**: Transparent, hyper-literal formal equivalence showing every added copula, article, transitive direct object, and untranslated particle.
-2. **Word-Level Lexical Graph & Interlinear**:
-   * Every word token is cross-linked via TSV datasets to Hebrew/Aramaic (`UHB`) and Greek (`SR-GNT`) dictionary entries, lemmas, Strong's numbers, morphological tags, and canonical gloss distributions.
-3. **Explicit Translation Decision Tags (`\add`)**:
-   * Encodes the exact reason for every addition or divergence (`@` for referent replacements, `≈` for rewordings, `#` for number changes, `%` for speech shifts, `^` for opposite phrasing, `?` for uncertainty, `≈`/`^`/`→` for Hebrew poetic parallelism, and `⇔` for clause re-ordering).
-4. **Readable Text by Default**:
-   * The USFM markers of the published text are not useful to a model, so the served text is prose: character formatting (`\it`, `\bd`, `\sup`, `\sig`, `\qs`, `\jmp`), poetry line markers (`\q1`, `\p`, `\li1`), translator footnotes, figures, and performance directions are resolved when the database is built, while `\add` decision codes become `[≈:…]` annotations in the annotated view.
-   * The decisions themselves stay queryable, and the untouched USFM of any passage is available on request with `include_raw`.
+The OET Readers’ Version (RV) and Literal Version (LV) are intended to be read together.
+This server supplies parallel passages, translator notes, source-word links, lemma usage
+statistics, and explicit translation annotations for LLM research.
+
+- Greek interlinears and counts exclude unused source variants by default; variants remain
+  available with their original selection marker.
+- Hebrew and Aramaic words link to their actual lemma components, including prefixed forms.
+- Standard Strong’s identifiers are distinct from the extended identifiers in SR-GNT.
+- Decisions retain their source version and affected ESFM span. Their category is not a
+  passage-specific explanation; translator notes and model inference remain distinct.
+- Paragraph/poetry structure, introductions, sections, source declarations, word alignments,
+  and decoded morphology are available on demand.
+- Every tool is read-only and returns structured data plus readable text. Searches and passages
+  have bounded pages and continuation offsets.
+
+The lexical data describes **OET-LV word-table usage**, not dictionary definitions, etymology,
+manuscript witness evidence, or RV gloss frequencies. Hebrew whole-word glosses can contain
+several morphemes. Read `get_oet_guide` before interpreting unfamiliar conventions.
 
 ---
 
@@ -31,7 +39,7 @@ uvx oet-mcp-server
 
 ### Installation from Source
 
-> **Note:** the 191 MB corpus database is a **Git-LFS** file. Without
+> **Note:** the approximately 417 MiB corpus database is a **Git-LFS** file. Without
 > `git lfs pull` you get only a ~130-byte LFS pointer, and every data tool
 > fails at runtime.
 
@@ -84,75 +92,94 @@ Or for local development:
 
 ## MCP Server Capabilities
 
-### 1. Resources & Resource Templates
+### Tools
 
-| URI Pattern | Description |
-| :--- | :--- |
-| `oet://catalog` | Lists all 66 canonical biblical books plus the 15 deuterocanonical books, with chapter counts, testaments, and translation status. |
-| `oet://metadata/rv` | Translation philosophy and `\add` decision encoding guide for OET-RV. |
-| `oet://metadata/lv` | Markup guide for OET-LV (added copulas, untranslated particles, direct objects). |
-| `oet://formats` | Complete specification of OET encoding formats and special character codes. |
-| `oet://passage/{version}/{reference}` | Direct reading URI for any passage (`parallel`, `rv`, `lv`, `interlinear`). |
-| `oet://word/{word_id}` | Lookup a specific word link token (e.g. `JHNc1v1w5`, `MAT_1:1w1`). |
-| `oet://lexicon/{lang}/{query}` | Dictionary definition and canonical gloss distribution for a lemma or Strong's ID. |
+| Tool | Purpose | Useful options |
+| :--- | :--- | :--- |
+| `get_oet_guide` | Interpretation conventions and evidence limits | No arguments |
+| `get_passage` | Parallel, RV, LV, or interlinear passages | `include_notes`, `show_decision_codes`, `include_structure`, `include_alignment`, `include_raw`, `include_variants`, `limit`, `offset` |
+| `get_book_context` | Introductions, source notes, version declarations and section outlines | `book`, `limit`, `offset` |
+| `get_section` | Read a complete contextual section in bounded pages | `section_id`, `limit`, `offset` |
+| `compare_translations` | Version-specific annotation comparison | `reference`, `limit`, `offset` |
+| `get_translation_decisions` | Decision categories, source spans and supporting notes | `reference`, `limit`, `offset` |
+| `search_text` | English keyword/phrase matches in the requested translation | `version`, `testament`, `book`, `limit`, `offset` |
+| `search_lemma` | Selected source-word counts and representative occurrences | `testament`, `book`, `include_variants`, `sampling`, `limit`, `offset` |
+| `lookup_word` | Selection status, lemma components, grammar and aligned English | `word_id` |
+| `get_lexicon_entry` | Complete LV gloss distribution and selected/unused/unglossed counts | `query`, `lang` (`auto`, `greek`, `hebrew`, `aramaic`) |
 
----
+Examples:
 
-### 2. Tools
+```text
+get_passage(reference="John 1:1", version="interlinear", include_alignment=true)
+get_passage(reference="Psalm 1:1-6", include_structure=true)
+get_book_context(book="John")
+get_section(section_id="JHN.RV.S1")
+search_lemma(lemma_or_strongs="G3056", sampling="representative")
+search_lemma(lemma_or_strongs="H7225", book="Genesis", sampling="canonical")
+lookup_word(word_id="GEN_1:1w1")
+```
 
-#### `get_passage`
-Retrieve scripture in parallel side-by-side, readers, literal, or interlinear table view.
-* **Arguments**:
-  * `reference` (*string*, required): e.g. `"John 1:1-5"`, `"Rom 8:28"`, `"Gen 1:1"`.
-  * `version` (*string*): `"parallel"`, `"rv"`, `"lv"`, or `"interlinear"`.
-  * `include_notes` (*bool*): Attach translator footnotes (`TD:`, `TC:`) and cross-references.
-  * `include_raw` (*bool*): Include the original USFM markers in `rv_esfm` / `lv_esfm` (JSON only). Off by default, so that a model reads plain text.
-  * `format` (*string*): `"markdown"` or `"json"`.
-  * `show_decision_codes` (*bool*): Reveal inline decision tags (`[@referent]`, `[≈rewording]`).
+`get_passage` defaults to 20 verse records, with at most 10 in interlinear mode.
+Other limits are described in each tool schema; all are capped at 100. Repeat the same
+request with the returned `next_offset` to continue. Grouped source verses such as `1–3`
+retain their labels and can be retrieved by requesting a verse inside the group. RV and LV
+may use different groupings; unavailable matching segments are identified explicitly.
 
-#### `compare_translations`
-Calculates a granular comparative breakdown between OET-RV and OET-LV for a passage.
-* **Arguments**:
-  * `reference` (*string*, required): e.g. `"John 1:1-3"`, `"Romans 1:16-17"`.
+Text search treats unquoted words as AND terms and double-quoted text as an exact phrase.
+Punctuation is accepted; FTS operators are not exposed. Version filters constrain the search
+itself. Results include a filtered total, not just the page size.
 
-#### `search_text`
-High-speed full-text search across RV and LV using SQLite FTS5.
-* **Arguments**:
-  * `query` (*string*, required): e.g. `"true light"`, `"covenant"`.
-  * `version` (*string*): `"both"`, `"rv"`, or `"lv"`.
-  * `testament` (*string*): `"all"`, `"OT"`, or `"NT"`.
-  * `limit` (*int*): Max results (default 20).
+Lemma lookup accepts original-script or source-transliterated lemmas, accent variants,
+standard Strong’s IDs (`G3056`, `H7225`), and returned lemma keys. Extended Greek IDs remain
+accepted when unambiguous. Disambiguate explicitly with `strongs:G260` versus
+`strongs_ext:G260`. Do not infer a root from an English gloss. Ambiguous lemma lookup returns
+candidate keys; concordance search can combine matching lemma entries without double-counting
+source words. Representative sampling rotates across books; canonical sampling supports
+consecutive traversal. Full-corpus statistics are labelled separately from filtered samples.
 
-#### `search_lemma`
-Concordance lookup showing how an original Hebrew/Greek root or Strong's ID is translated across the entire Bible.
-* **Arguments**:
-  * `lemma_or_strongs` (*string*, required): e.g. `"logos"`, `"G3056"`, `"bereshit"`, `"H7225"`.
-  * `testament` (*string*): `"all"`, `"OT"`, `"NT"`.
-  * `limit` (*int*): Max sample occurrences.
+Word IDs include `JHN_1:1w5`, `JHNc1v1w5`, and namespaced source-table rows (`NT:62342`, `OT:1`).
+Alignment spans and decision spans are half-open character offsets in the returned verse ESFM,
+not in the cleaned English text. Source-table IDs are revision-specific. Links are imported
+from the source; missing links are not guessed. Greek word order follows source-table positions.
+Decoded grammar names its scheme and preserves unknown codes rather than guessing their meaning.
 
-#### `lookup_word`
-Drill down into a specific original word link token with complete grammatical parsing and manuscript collations.
-* **Arguments**:
-  * `word_id` (*string*, required): e.g. `"JHNc1v1w5"`, `"MAT_1:1w1"`.
+`format="markdown"` is the default passage reading view. `format="json"` changes its text
+representation; both formats always return typed MCP `structuredContent` with an output schema.
+Raw ESFM, structure and alignments are opt-in. Null and default optional values are omitted.
+Public passage URLs may show a newer edition than the local corpus; cite its revision and hashes.
 
-#### `get_lexicon_entry`
-Retrieve dictionary definition, semantic domain, and canonical distribution for a lemma or Strong's ID.
-* **Arguments**:
-  * `query` (*string*, required): Lemma or Strong's ID.
-  * `lang` (*string*): `"auto"`, `"greek"`, `"hebrew"`.
+### Resources and prompts
 
-#### `get_translation_decisions`
-Isolates all explicit `\add` decision codes in a passage.
-* **Arguments**:
-  * `reference` (*string*, required): e.g. `"John 1:1-18"`.
+Resources: `oet://guide`, `oet://catalog`, `oet://metadata/rv`, `oet://metadata/lv`,
+`oet://formats`, `oet://passage/{version}/{reference}`, `oet://word/{word_id}`,
+and `oet://lexicon/{lang}/{query}`. Resource passage reads use a bounded default page;
+use the tools to continue or request detailed views.
 
----
+The `comparative_exegesis`, `biblical_word_study`, and `translation_critique` prompts
+start from context and source evidence. They distinguish translator notes from model
+interpretation and do not request unsupported dictionary or manuscript claims.
 
-### 3. MCP Prompts
+### Corpus updates and compatibility
 
-* **`comparative_exegesis`**: Guided prompt leading an AI through rigorous exegesis (macro discourse in RV, micro syntax in LV, and root word studies).
-* **`biblical_word_study`**: Guided prompt performing a complete biblical word study across genres and testaments.
-* **`translation_critique`**: Guided prompt analyzing why modern dynamic translations diverge from literal syntax in difficult verses.
+Version 0.2 requires MCP SDK 2.1.1 or newer within major version 2 and **corpus schema 2**.
+Older corpus files are rejected with a rebuild message. The database is approximately 417 MiB
+and remains a Git-LFS artifact. Build from the local OET checkout with:
+
+```bash
+uv run python scripts/build_db.py
+uv run python scripts/verify_db.py
+uv run pytest -q
+```
+
+The builder writes a temporary database and replaces the destination only after a successful
+build and integrity check. `--output /path/to/corpus.db` builds to a different destination.
+Provenance records the OET repository revision, whether source files differ from that revision,
+source-file and word-table hashes, build timestamp, attribution and text licence.
+Per-book declarations retain source edition and adaptation notes, including WEBBE material.
+
+Regression scenarios cover unused variants in John 1:1, `logos` counts, prefixed Hebrew stems,
+invalid ranges, version/language filters, decision attribution, recovered notes, poetry boundaries,
+word alignment, grouped verses, pagination, morphology and the MCP output contract.
 
 ---
 
@@ -182,7 +209,7 @@ Isolates all explicit `\add` decision codes in a passage.
 
 ## Deployment (Docker)
 
-> **Important:** the 191 MB corpus database is stored as a **Git-LFS** file. A
+> **Important:** the approximately 417 MiB corpus database is stored as a **Git-LFS** file. A
 > checkout without `git lfs pull` contains only a ~130-byte LFS pointer, which
 > makes every data tool fail at runtime. The Dockerfile guards against this:
 > `scripts/verify_db.py` runs at build time and **fails the build** if the DB

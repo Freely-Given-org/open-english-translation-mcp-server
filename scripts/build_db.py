@@ -16,10 +16,13 @@ import csv
 import json
 import sqlite3
 import glob
+import hashlib
 from pathlib import Path
 from collections import defaultdict, Counter
 
 WORKSPACE_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(WORKSPACE_DIR / "src"))
+from oet_mcp_server.lexical import SCHEMA_VERSION, normalize_alias, greek_strongs, hebrew_strongs
 DB_DIR = WORKSPACE_DIR / "src" / "oet_mcp_server" / "data"
 DB_PATH = DB_DIR / "oet_corpus.db"
 
@@ -431,6 +434,12 @@ def parse_esfm_file(filepath: Path, version: str):
             book_code = m_id.group(1).upper()
 
     book_meta = {
+        "source_file": str(filepath.relative_to(OET_REPO)) if filepath.is_relative_to(OET_REPO) else filepath.name,
+        "sha256": hashlib.sha256(filepath.read_bytes()).hexdigest(),
+        "source_declaration": next((line[4:] for line in content.splitlines() if line.startswith(r"\id ")), ""),
+        "source_notes": [line[5:] for line in content.splitlines() if line.startswith(r"\rem ") and "WORDTABLE" not in line and "ESFM v" not in line],
+        "introduction": [],
+        "superscriptions": {},
         "book_code": book_code,
         "title": None,
         "toc1": None,
@@ -442,6 +451,8 @@ def parse_esfm_file(filepath: Path, version: str):
     notes = []
     current_chapter = 0
     current_section = None
+    current_section_number = 0
+    current_block = "p"
     lines = content.splitlines()
 
     # A verse's text can span several source lines: the first begins with "\v N" and the
@@ -455,9 +466,9 @@ def parse_esfm_file(filepath: Path, version: str):
         nonlocal pending_verse
         if pending_verse is None:
             return
-        v_num_str, fragments = pending_verse
+        v_num_str, fragments, first_block = pending_verse
         pending_verse = None
-        v_text_raw = " ".join(f for f in fragments if f).strip()
+        v_text_raw = "\n".join(f for f in fragments if f).strip()
 
         v_clean_num = re.split(r'[-–,]', v_num_str)[0]
         try:
@@ -467,32 +478,37 @@ def parse_esfm_file(filepath: Path, version: str):
 
         verse_id = f"{book_code}.{current_chapter}.{v_num_str}"
 
-        # Extract footnotes
-        for fn in re.finditer(r'\\f\s*\+\s*\\fr\s*(.*?)\\ft\s*(.*?)\\f\*', v_text_raw):
-            fr = fn.group(1).strip()
-            ft = fn.group(2).strip()
-            category = "General"
-            if ft.startswith("TD:"):
-                category = "TD"
-            elif ft.startswith("TC:"):
-                category = "TC"
-            elif ft.startswith("Hist:"):
-                category = "Hist"
-            elif ft.startswith("Fig:"):
-                category = "Fig"
-            notes.append((verse_id, version, "footnote", category, fr, ft))
+        # Notes may use ft, fq/fqa, or several alternating subfields.
+        # Strip their markup while retaining every textual subfield.
+        for note_kind, opener, closer, caller_marker in (("footnote", "f", "f", "fr"), ("xref", "x", "x", "xo")):
+            pattern = rf"\\{opener}\s+[^\s]+\s+(.*?)\\{closer}\*"
+            for match in re.finditer(pattern, v_text_raw, re.DOTALL):
+                body = match[1]
+                caller = re.search(rf"\\{caller_marker}\s+([^\\]*)", body)
+                caller_ref = caller[1].strip() if caller else None
+                if caller:
+                    body = body[:caller.start()] + body[caller.end():]
+                body = re.sub(r"\\(?:f[a-z]+|x[a-z]+)\*?\s*", " ", body)
+                text = clean_esfm_text(body)
+                category = text.split(":", 1)[0] if text.startswith(("TD:", "TC:", "Hist:", "Fig:")) else "General"
+                notes.append((verse_id, version, note_kind, category, caller_ref, text))
 
-        # Extract cross-references
-        for xr in re.finditer(r'\\x\s*\+\s*\\xo\s*(.*?)\\xt\s*(.*?)\\x\*', v_text_raw):
-            xo = xr.group(1).strip()
-            xt = xr.group(2).strip()
-            notes.append((verse_id, version, "xref", "General", xo, xt))
-
+        structure = []
+        for index, fragment in enumerate(fragments):
+            marker_match = re.match(r"\\(q\d*|p|m|mi|pi\d*|li\d*|sp|nb|b)(?:\s|$)", fragment)
+            marker = marker_match[1] if marker_match else first_block
+            structure.append(dict(marker=marker, text=clean_esfm_text(fragment),
+                                  section_id=f"{book_code}.{version}.S{current_section_number}" if current_section_number else None))
         clean = clean_esfm_text(v_text_raw)
         annotated = annotate_esfm_text(v_text_raw, version)
         decisions = extract_decisions(v_text_raw)
+        add_spans = iter(re.finditer(ADD_SPAN_RE, v_text_raw))
+        for decision in decisions:
+            if "text" in decision:
+                match = next(add_spans)
+                decision["source_span"] = [match.start(), match.end()]
         has_missing = 1 if "◘" in v_text_raw else 0
-        has_parallel = 1 if any(p in v_text_raw for p in ["≈", "→"]) else 0
+        has_parallel = int(any(d["type"].endswith("parallelism") for d in decisions))
         has_swap = 1 if "⇔" in v_text_raw else 0
 
         verses.append({
@@ -508,7 +524,9 @@ def parse_esfm_file(filepath: Path, version: str):
             "has_missing": has_missing,
             "has_parallel": has_parallel,
             "has_swap": has_swap,
-            "section": current_section
+            "section": current_section,
+            "section_number": current_section_number,
+            "structure": structure
         })
 
     for line in lines:
@@ -516,6 +534,10 @@ def parse_esfm_file(filepath: Path, version: str):
         if not line:
             continue
 
+        if current_chapter == 0 and re.match(r"\\i(?:s|p|q|li|mt|o)\d*\s", line):
+            book_meta["introduction"].append(clean_esfm_text(line.split(maxsplit=1)[1]))
+        if line.startswith(r"\d "):
+            book_meta["superscriptions"][str(current_chapter)] = clean_esfm_text(line[3:])
         if line.startswith(r'\toc1 '):
             book_meta["toc1"] = line[6:].strip()
         elif line.startswith(r'\toc2 '):
@@ -535,12 +557,16 @@ def parse_esfm_file(filepath: Path, version: str):
             flush_verse()
             parts = line.split(maxsplit=1)
             current_section = parts[1].strip() if len(parts) > 1 else None
+            current_section_number += 1
         elif line.startswith(r'\v '):
             flush_verse()
             parts = line[3:].split(maxsplit=1)
             if not parts:
                 continue
-            pending_verse = (parts[0], [parts[1] if len(parts) > 1 else ""])
+            pending_verse = (parts[0], [parts[1] if len(parts) > 1 else ""], current_block)
+        elif re.fullmatch(r"\\(?:q\d*|p|m|mi|pi\d*|b|nb)", line):
+            flush_verse()
+            current_block = line[1:]
         elif pending_verse is not None:
             # A continuation line of the verse being accumulated. Poetry (\q1, \q2),
             # paragraph (\p, \m) and list (\li1) lines belong to the verse above them, so
@@ -568,6 +594,11 @@ def create_schema(conn: sqlite3.Connection):
     DROP TABLE IF EXISTS formats_reference;
     DROP TABLE IF EXISTS verses_fts;
     DROP TABLE IF EXISTS lexicon_fts;
+    DROP TABLE IF EXISTS word_lemmas;
+    DROP TABLE IF EXISTS lexicon_aliases;
+    DROP TABLE IF EXISTS book_metadata;
+    DROP TABLE IF EXISTS corpus_metadata;
+    DROP TABLE IF EXISTS word_alignments;
 
     CREATE TABLE books (
         book_code TEXT PRIMARY KEY,
@@ -588,6 +619,8 @@ def create_schema(conn: sqlite3.Connection):
         chapter INTEGER,
         start_verse INTEGER,
         end_verse INTEGER,
+        end_chapter INTEGER,
+        source_version TEXT NOT NULL,
         heading TEXT NOT NULL,
         FOREIGN KEY(book_code) REFERENCES books(book_code)
     );
@@ -597,6 +630,7 @@ def create_schema(conn: sqlite3.Connection):
         book_code TEXT NOT NULL,
         chapter INTEGER NOT NULL,
         verse INTEGER NOT NULL,
+        verse_end INTEGER,
         verse_label TEXT NOT NULL,
         rv_text_raw TEXT,
         rv_text_clean TEXT,
@@ -609,10 +643,22 @@ def create_schema(conn: sqlite3.Connection):
         has_order_swap INTEGER DEFAULT 0,
         decisions_json TEXT,
         section_heading TEXT,
+        structure_json TEXT NOT NULL,
         FOREIGN KEY(book_code) REFERENCES books(book_code)
     );
 
     CREATE INDEX idx_verses_bcv ON verses(book_code, chapter, verse);
+    CREATE TABLE book_metadata (
+        book_code TEXT NOT NULL, source_version TEXT NOT NULL, metadata_json TEXT NOT NULL,
+        PRIMARY KEY(book_code, source_version)
+    );
+    CREATE TABLE corpus_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE word_alignments (
+        verse_id TEXT NOT NULL, source_version TEXT NOT NULL, word_link_id TEXT,
+        word_num INTEGER NOT NULL, text TEXT NOT NULL, source_start INTEGER, source_end INTEGER
+    );
+    CREATE INDEX idx_alignments_verse ON word_alignments(verse_id, source_version);
+    CREATE INDEX idx_alignments_word ON word_alignments(word_link_id);
 
     CREATE TABLE words (
         word_link_id TEXT PRIMARY KEY,
@@ -633,7 +679,12 @@ def create_schema(conn: sqlite3.Connection):
         oet_gloss TEXT,
         contextual_gloss TEXT,
         morpheme_glosses TEXT,
-        tags TEXT
+        tags TEXT,
+        lang TEXT NOT NULL,
+        source_status TEXT NOT NULL,
+        is_selected INTEGER NOT NULL,
+        source_strongs TEXT,
+        strongs_standard_json TEXT NOT NULL
     );
 
     CREATE INDEX idx_words_ref ON words(book_code, chapter, verse);
@@ -650,11 +701,28 @@ def create_schema(conn: sqlite3.Connection):
         primary_gloss TEXT,
         total_occurrences INTEGER DEFAULT 0,
         gloss_distribution_json TEXT,
-        first_occurrences_refs TEXT
+        first_occurrences_refs TEXT,
+        strongs_ids_json TEXT NOT NULL,
+        unused_variant_occurrences INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE INDEX idx_lexicon_strongs ON lexicon(strongs);
     CREATE INDEX idx_lexicon_lemma ON lexicon(lemma);
+
+    CREATE TABLE word_lemmas (
+        word_link_id TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        lemma_key TEXT NOT NULL,
+        strongs TEXT,
+        PRIMARY KEY(word_link_id, position)
+    );
+    CREATE INDEX idx_word_lemmas_key ON word_lemmas(lemma_key, word_link_id);
+    CREATE TABLE lexicon_aliases (
+        alias TEXT NOT NULL,
+        lemma_key TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        PRIMARY KEY(alias, lemma_key, kind)
+    );
 
     CREATE TABLE notes_and_xrefs (
         note_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -700,6 +768,7 @@ def create_schema(conn: sqlite3.Connection):
         content_rowid='rowid'
     );
     """)
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
 
 
@@ -713,190 +782,109 @@ def populate_formats_reference(conn: sqlite3.Connection):
 
 
 def ingest_word_tables(conn: sqlite3.Connection):
-    """Ingests NT and OT TSV word tables and compiles lexicon statistics."""
-    cur = conn.cursor()
-    print("Ingesting NT Word Table TSV...")
+    """Keep source selection and component-to-lemma relationships intact."""
+    lemma_path = RV_DIR / "OET-LV_OT_lemma_table.tsv"
+    with lemma_path.open(encoding="utf-8-sig") as f:
+        hebrew_lemmas = list(csv.DictReader(f, delimiter="\t"))
+    words, links, aliases = [], [], set()
+    stats = {}
 
-    words_data = []
-    lexicon_stats = defaultdict(lambda: {
-        "lang": "greek",
-        "lemma": "",
-        "lemma_display": "",
-        "strongs": "",
-        "glosses": Counter(),
-        "refs": []
-    })
+    def register(key, lang, lemma, display, strongs, extended, ref, selected, gloss):
+        st = stats.setdefault(key, dict(lang=lang, lemma=lemma, display=display,
+                                       strongs=set(), glosses=Counter(), refs=[],
+                                       selected=set(), unused=set()))
+        if strongs:
+            st["strongs"].add(strongs)
+            aliases.add((normalize_alias(strongs), key, "strongs"))
+        if extended:
+            aliases.add((normalize_alias(extended), key, "strongs_ext"))
+        for value in (key, lemma, display):
+            if value:
+                aliases.add((normalize_alias(value), key, "lemma"))
+        bucket = st["selected"] if selected else st["unused"]
+        if ref not in bucket:
+            bucket.add(ref)
+            if selected:
+                if gloss:
+                    st["glosses"][clean_esfm_text(gloss).lower()] += 1
+                verse_ref = ref.split("w")[0].replace("_", " ")
+                if verse_ref not in st["refs"] and len(st["refs"]) < 50:
+                    st["refs"].append(verse_ref)
 
-    if NT_TSV_PATH.exists():
-        with open(NT_TSV_PATH, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f, delimiter="\t")
-            for row in reader:
+    for path, is_greek in ((NT_TSV_PATH, True), (OT_TSV_PATH, False)):
+        with path.open(encoding="utf-8-sig") as f:
+            for row_number, row in enumerate(csv.DictReader(f, delimiter="\t"), 1):
                 ref = row.get("Ref", "")
-                m = re.match(r'([A-Z0-9]{3})_(\d+):(\d+)w(\d+)', ref)
+                m = re.fullmatch(r"([A-Z0-9]{3})_(\d+):(\d+)w(\d+)", ref)
                 if not m:
                     continue
-                book, ch, v, w_seq = m.groups()
-                greek_word = row.get("GreekWord", "")
-                sr_lemma = row.get("SRLemma", "")
-                greek_lemma = row.get("GreekLemma", "")
-                vlt_gloss = row.get("VLTGlossWords", "")
-                oet_gloss = row.get("OETGlossWords", "")
-                strongs_ext = row.get("StrongsExt", "")
-                strongs = f"G{strongs_ext}" if strongs_ext and not strongs_ext.startswith("G") else strongs_ext
-                role = row.get("Role", "")
-                morph = row.get("Morphology", "")
-                tags = row.get("Tags", "")
+                book, ch, verse, seq = m.groups()
+                components = []
+                if is_greek:
+                    lang = "greek"
+                    status = row["Probability"]
+                    selected = bool(status)
+                    standard, extended = greek_strongs(row["StrongsExt"])
+                    lemma, original_lemma = row["SRLemma"], row["GreekLemma"]
+                    key = f"grk:{lemma or extended or ref}"
+                    components.append((key, lemma, original_lemma, standard, extended))
+                    original = clean = row["GreekWord"]
+                    vlt, gloss = row["VLTGlossWords"], row["OETGlossWords"]
+                    contextual, morphemes = gloss, None
+                    source_strongs, strongs = row["StrongsExt"], extended
+                else:
+                    lang = "aramaic" if "A" in row["RowType"] else "hebrew"
+                    status, selected = row["RowType"], True
+                    original, clean = row["Word"], row["NoCantillations"]
+                    source_strongs = row["Strongs"]
+                    strong_components = source_strongs.split(",")
+                    for position, lemma_row in enumerate(row["LemmaRowList"].split(",")):
+                        # The source explicitly marks some unresolved lemma links.
+                        # Keep their Strong's components on the word without inventing a lemma.
+                        if not lemma_row.strip().isdigit():
+                            continue
+                        idx = int(lemma_row)
+                        if not 1 <= idx <= len(hebrew_lemmas):
+                            raise ValueError(f"Invalid lemma row {idx} in {ref}")
+                        value = hebrew_lemmas[idx - 1]["Lemma"]
+                        standard = hebrew_strongs(strong_components[position]) if position < len(strong_components) else ""
+                        key = f"{'arc' if lang == 'aramaic' else 'heb'}:{idx}"
+                        components.append((key, value, value, standard, ""))
+                    original_lemma = ", ".join(c[1] for c in components)
+                    lemma = original_lemma
+                    strongs = ", ".join(dict.fromkeys(c[3] for c in components if c[3]))
+                    vlt = row["WordGloss"]
+                    contextual = row["ContextualWordGloss"]
+                    gloss = contextual or vlt
+                    morphemes = row["MorphemeGlosses"]
+                standard_ids = list(dict.fromkeys(c[3] for c in components if c[3])) if is_greek else list(dict.fromkeys(
+                    value for part in source_strongs.split(",") if (value := hebrew_strongs(part))))
+                words.append((ref, row_number, book, int(ch), int(verse), int(seq), ref,
+                              original, clean, lemma, original_lemma, strongs, row["Role"],
+                              row["Morphology"], vlt, gloss, contextual, morphemes, row["Tags"],
+                              lang, status, int(selected), source_strongs, json.dumps(standard_ids)))
+                for position, (key, lemma, display, standard, extended) in enumerate(components):
+                    links.append((ref, position, key, standard))
+                    register(key, lang, lemma, display, standard, extended, ref, selected, gloss)
 
-                word_link_id = ref
-                words_data.append((
-                    word_link_id,
-                    None,
-                    book,
-                    int(ch),
-                    int(v),
-                    int(w_seq),
-                    ref,
-                    greek_word,
-                    greek_word,
-                    sr_lemma,
-                    greek_lemma,
-                    strongs,
-                    role,
-                    morph,
-                    vlt_gloss,
-                    oet_gloss,
-                    oet_gloss,
-                    None,
-                    tags
-                ))
-
-                l_key = f"grk:{sr_lemma or strongs}"
-                st = lexicon_stats[l_key]
-                st["lang"] = "greek"
-                st["lemma"] = sr_lemma
-                st["lemma_display"] = greek_lemma
-                st["strongs"] = strongs
-                if oet_gloss:
-                    clean_g = clean_esfm_text(oet_gloss).lower()
-                    if clean_g:
-                        st["glosses"][clean_g] += 1
-                if len(st["refs"]) < 50:
-                    st["refs"].append(f"{book} {ch}:{v}")
-
-    print(f"Loaded {len(words_data):,} NT words. Ingesting OT Word Table TSV...")
-
-    if OT_TSV_PATH.exists():
-        with open(OT_TSV_PATH, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f, delimiter="\t")
-            for row in reader:
-                ref = row.get("Ref", "")
-                m = re.match(r'([A-Z0-9]{3})_(\d+):(\d+)w(\d+)', ref)
-                if not m:
-                    continue
-                book, ch, v, w_seq = m.groups()
-                heb_word = row.get("Word", "")
-                heb_clean = row.get("NoCantillations", "")
-                strongs_val = row.get("Strongs", "")
-                strongs = f"H{strongs_val}" if strongs_val and not strongs_val.startswith("H") else strongs_val
-                morph = row.get("Morphology", "")
-                morph_glosses = row.get("MorphemeGlosses", "")
-                word_gloss = row.get("WordGloss", "")
-                ctx_gloss = row.get("ContextualWordGloss", "")
-                role = row.get("Role", "")
-                tags = row.get("Tags", "")
-
-                word_link_id = ref
-                words_data.append((
-                    word_link_id,
-                    None,
-                    book,
-                    int(ch),
-                    int(v),
-                    int(w_seq),
-                    ref,
-                    heb_word,
-                    heb_clean,
-                    strongs_val,
-                    heb_clean,
-                    strongs,
-                    role,
-                    morph,
-                    word_gloss,
-                    ctx_gloss or word_gloss,
-                    ctx_gloss,
-                    morph_glosses,
-                    tags
-                ))
-
-                l_key = f"heb:{strongs or heb_clean}"
-                st = lexicon_stats[l_key]
-                st["lang"] = "hebrew"
-                st["lemma"] = strongs_val
-                st["lemma_display"] = heb_clean
-                st["strongs"] = strongs
-                if word_gloss:
-                    clean_g = clean_esfm_text(word_gloss).lower()
-                    if clean_g:
-                        st["glosses"][clean_g] += 1
-                if len(st["refs"]) < 50:
-                    st["refs"].append(f"{book} {ch}:{v}")
-
-    print(f"Total words collected: {len(words_data):,}. Inserting into SQLite...")
-
-    cur.executemany("""
-    INSERT INTO words (
-        word_link_id, word_num, book_code, chapter, verse, word_seq, ref_str,
-        original_word, original_word_clean, sr_lemma, original_lemma, strongs,
-        role, morphology, vlt_gloss, oet_gloss, contextual_gloss, morpheme_glosses, tags
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, words_data)
-    conn.commit()
-
-    print(f"Compiling {len(lexicon_stats):,} lexicon entries...")
+    conn.executemany("""
+        INSERT INTO words VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """, words)
+    conn.executemany("INSERT INTO word_lemmas VALUES (?,?,?,?)", links)
     lex_rows = []
-    lex_fts_rows = []
-    for l_key, st in lexicon_stats.items():
-        total_occ = sum(st["glosses"].values())
-        top_gloss = st["glosses"].most_common(1)[0][0] if st["glosses"] else ""
-        gloss_json = json.dumps(dict(st["glosses"].most_common(10)), ensure_ascii=False)
-        refs_str = ", ".join(st["refs"])
-        glosses_list = ", ".join(st["glosses"].keys())
-
-        lex_rows.append((
-            l_key,
-            st["lang"],
-            st["lemma"],
-            st["lemma_display"],
-            st["strongs"],
-            top_gloss,
-            total_occ,
-            gloss_json,
-            refs_str
-        ))
-
-        lex_fts_rows.append((
-            l_key,
-            st["lang"],
-            st["lemma"],
-            st["lemma_display"],
-            st["strongs"],
-            top_gloss,
-            glosses_list
-        ))
-
-    cur.executemany("""
-    INSERT INTO lexicon (
-        lemma_key, lang, lemma, lemma_display, strongs, primary_gloss,
-        total_occurrences, gloss_distribution_json, first_occurrences_refs
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, lex_rows)
-
-    cur.execute("""
-    INSERT INTO lexicon_fts (rowid, lemma_key, lang, lemma, lemma_display, strongs, primary_gloss)
-    SELECT rowid, lemma_key, lang, lemma, lemma_display, strongs, primary_gloss FROM lexicon;
-    """)
+    for key, st in stats.items():
+        ids = sorted(st["strongs"])
+        glosses = dict(st["glosses"].most_common())
+        lex_rows.append((key, st["lang"], st["lemma"], st["display"], ", ".join(ids),
+                         next(iter(glosses), ""), len(st["selected"]),
+                         json.dumps(glosses, ensure_ascii=False), ", ".join(st["refs"]),
+                         json.dumps(ids), len(st["unused"])))
+    conn.executemany("INSERT INTO lexicon VALUES (?,?,?,?,?,?,?,?,?,?,?)", lex_rows)
+    conn.executemany("INSERT INTO lexicon_aliases VALUES (?,?,?)", sorted(aliases))
+    conn.execute("""INSERT INTO lexicon_fts (rowid, lemma_key, lang, lemma, lemma_display, strongs, primary_gloss)
+                    SELECT rowid, lemma_key, lang, lemma, lemma_display, strongs, primary_gloss FROM lexicon""")
     conn.commit()
-    print("Lexicon and words ingested successfully.")
+    print(f"Loaded {len(words):,} words and {len(lex_rows):,} lemma entries with selection status.")
 
 
 def ingest_bibles(conn: sqlite3.Connection):
@@ -904,12 +892,38 @@ def ingest_bibles(conn: sqlite3.Connection):
     cur = conn.cursor()
     print("Ingesting OET-RV and OET-LV ESFM files...")
 
-    rv_files = list(RV_DIR.glob("OET-RV_*.ESFM"))
-    lv_files = list(LV_NT_DIR.glob("OET-LV_*.ESFM")) + list(LV_OT_DIR.glob("OET-LV_*.ESFM"))
+    rv_files = sorted(RV_DIR.glob("OET-RV_*.ESFM"))
+    lv_files = sorted(LV_NT_DIR.glob("OET-LV_*.ESFM")) + sorted(LV_OT_DIR.glob("OET-LV_*.ESFM"))
 
     rv_verses_by_ref = {}
     lv_verses_by_ref = {}
     all_notes = []
+    book_metadata = []
+    all_sections = []
+    alignments = []
+    word_numbers = {(r[0] == "greek", r[1]): r[2] for r in cur.execute("SELECT lang,word_num,word_link_id FROM words")}
+
+    def retain_context(meta, verses, version):
+        book_metadata.append((meta["book_code"], version, json.dumps(meta, ensure_ascii=False)))
+        sections = {}
+        for v in verses:
+            number = v["section_number"]
+            if number:
+                sec = sections.setdefault(number, dict(first=v, last=v))
+                sec["last"] = v
+            # Suppress notes without shifting offsets into the returned verse ESFM.
+            raw = re.sub(r"\\[fx]\s+.*?\\[fx]\*", lambda m: " " * len(m[0]), v["raw"], flags=re.DOTALL)
+            greek = ALL_BOOKS.get(v["book_code"], (None, None, "OT"))[2] == "NT"
+            # Mask marker spellings without changing offsets into the verse ESFM.
+            raw = re.sub(r"\\\+?[a-z]+\d*\*?", lambda m: " " * len(m[0]), raw)
+            for match in re.finditer(r"([^\s\\¦]+)¦(\d+)", raw):
+                number = int(match[2])
+                alignments.append((v["verse_id"], version, word_numbers.get((greek, number)), number,
+                                   clean_esfm_text(match[1]).lstrip(ADD_CODES + "_=÷"), match.start(), match.end()))
+        for number, sec in sections.items():
+            first, last = sec["first"], sec["last"]
+            all_sections.append((f"{meta['book_code']}.{version}.S{number}", meta["book_code"], first["chapter"],
+                                 first["verse"], last["verse"], last["chapter"], version, first["section"]))
     book_stats = defaultdict(lambda: {"rv_chapters": set(), "lv_chapters": set(), "rv_verses": 0, "lv_verses": 0, "sections": 0, "oet_name": None})
 
     print(f"Found {len(rv_files):,} RV files and {len(lv_files):,} LV files.")
@@ -917,6 +931,7 @@ def ingest_bibles(conn: sqlite3.Connection):
     for r_file in rv_files:
         b_meta, v_list, n_list = parse_esfm_file(r_file, "RV")
         b_code = b_meta["book_code"]
+        retain_context(b_meta, v_list, "RV")
         if b_meta["title"]:
             book_stats[b_code]["oet_name"] = b_meta["title"]
         for v in v_list:
@@ -928,6 +943,7 @@ def ingest_bibles(conn: sqlite3.Connection):
     for l_file in lv_files:
         b_meta, v_list, n_list = parse_esfm_file(l_file, "LV")
         b_code = b_meta["book_code"]
+        retain_context(b_meta, v_list, "LV")
         for v in v_list:
             lv_verses_by_ref[v["verse_id"]] = v
             book_stats[b_code]["lv_chapters"].add(v["chapter"])
@@ -963,6 +979,11 @@ def ingest_bibles(conn: sqlite3.Connection):
     """, book_rows)
     conn.commit()
 
+    cur.executemany("INSERT INTO book_metadata VALUES (?,?,?)", book_metadata)
+    cur.executemany("INSERT INTO sections VALUES (?,?,?,?,?,?,?,?)", all_sections)
+    cur.executemany("INSERT INTO word_alignments VALUES (?,?,?,?,?,?,?)", alignments)
+    cur.execute("UPDATE books SET sections_count=(SELECT count(*) FROM sections s WHERE s.book_code=books.book_code)")
+
     # Merge verses
     all_verse_ids = set(rv_verses_by_ref.keys()) | set(lv_verses_by_ref.keys())
     print(f"Merging and inserting {len(all_verse_ids):,} unique verses...")
@@ -994,9 +1015,9 @@ def ingest_bibles(conn: sqlite3.Connection):
         # Combine decisions
         decisions = []
         if rv_v and rv_v["decisions"]:
-            decisions.extend(rv_v["decisions"])
+            decisions.extend(dict(d, source_version="RV") for d in rv_v["decisions"])
         if lv_v and lv_v["decisions"]:
-            decisions.extend(lv_v["decisions"])
+            decisions.extend(dict(d, source_version="LV") for d in lv_v["decisions"])
         dec_json = json.dumps(decisions, ensure_ascii=False) if decisions else None
 
         section = rv_v["section"] if rv_v and rv_v["section"] else (lv_v["section"] if lv_v else None)
@@ -1017,7 +1038,8 @@ def ingest_bibles(conn: sqlite3.Connection):
             has_parallel,
             has_swap,
             dec_json,
-            section
+            section,
+            json.dumps({ver: value["structure"] for ver, value in (("RV",rv_v),("LV",lv_v)) if value}, ensure_ascii=False)
         ))
 
     cur.executemany("""
@@ -1026,9 +1048,11 @@ def ingest_bibles(conn: sqlite3.Connection):
         rv_text_raw, rv_text_clean, rv_text_annotated,
         lv_text_raw, lv_text_clean, lv_text_annotated,
         has_missing_verse_flag, has_poetry_parallel, has_order_swap,
-        decisions_json, section_heading
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        decisions_json, section_heading, structure_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, verse_rows)
+    cur.executemany("UPDATE verses SET verse_end=? WHERE verse_id=?",
+                    [(max(map(int, re.findall(r"\d+", row[4]))), row[0]) for row in verse_rows])
 
     cur.execute("""
     INSERT INTO verses_fts (rowid, verse_id, book_code, chapter, verse, rv_text_clean, lv_text_clean)
@@ -1048,28 +1072,39 @@ def ingest_bibles(conn: sqlite3.Connection):
 
 
 def main():
-    DB_DIR.mkdir(parents=True, exist_ok=True)
-    if DB_PATH.exists():
-        print(f"Removing existing database at {DB_PATH}")
-        DB_PATH.unlink()
-
-    print(f"Building SQLite database at {DB_PATH}...")
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode = WAL;")
-    conn.execute("PRAGMA synchronous = NORMAL;")
-
-    create_schema(conn)
-    populate_formats_reference(conn)
-    ingest_word_tables(conn)
-    ingest_bibles(conn)
-
-    print("Optimizing SQLite database...")
-    conn.execute("PRAGMA optimize;")
-    conn.commit()
-    conn.close()
-
-    db_size_mb = DB_PATH.stat().st_size / (1024 * 1024)
-    print(f"Database build complete! Final size: {db_size_mb:.2f} MB")
+    import argparse
+    import tempfile
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, default=DB_PATH)
+    args = parser.parse_args()
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix="oet-build-", suffix=".db", dir=args.output.parent)
+    os.close(fd)
+    try:
+        with sqlite3.connect(temporary) as conn:
+            create_schema(conn)
+            populate_formats_reference(conn)
+            ingest_word_tables(conn)
+            ingest_bibles(conn)
+            import subprocess
+            from datetime import datetime, timezone
+            revision = subprocess.run(["git", "-C", str(OET_REPO), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+            dirty = subprocess.run(["git", "-C", str(OET_REPO), "diff", "--quiet", "HEAD", "--", "translatedTexts", "derivedTexts"], capture_output=True, check=False).returncode != 0
+            provenance = dict(schema_version=SCHEMA_VERSION, built_at=datetime.now(timezone.utc).isoformat(),
+                              source_commit=revision, source_dirty=dirty,
+                              source_repository="https://github.com/Freely-Given-org/OpenEnglishTranslation--OET",
+                              attribution="Open English Translation, Freely-Given.org", text_license="CC-BY-SA-4.0",
+                              word_table_hashes={str(path.relative_to(OET_REPO)): hashlib.sha256(path.read_bytes()).hexdigest()
+                                                for path in (NT_TSV_PATH, OT_TSV_PATH, RV_DIR / "OET-LV_OT_lemma_table.tsv")})
+            conn.executemany("INSERT INTO corpus_metadata VALUES (?,?)", [(k,json.dumps(v)) for k,v in provenance.items()])
+            conn.execute("PRAGMA optimize")
+            if conn.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                raise RuntimeError("Corpus integrity check failed")
+        conn.close()
+        os.replace(temporary, args.output)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    print(f"Database build complete: {args.output} ({args.output.stat().st_size / 1024**2:.1f} MB)")
 
 
 if __name__ == "__main__":
