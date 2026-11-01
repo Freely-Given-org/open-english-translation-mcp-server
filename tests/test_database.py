@@ -4,6 +4,8 @@ tests/test_database.py
 Unit tests for OETDatabase and query engine.
 """
 
+import re
+
 import pytest
 from oet_mcp_server.database import OETDatabase
 
@@ -142,7 +144,7 @@ def test_deuterocanonical_books_are_cataloged(db):
     assert codes[:66] == [b.book_code for b in cat if b.canonical_order <= 66]
     assert set(DEUTEROCANONICAL_CODES) <= set(codes)
     # They follow the canonical books, keeping the canonical ordering stable
-    assert codes[66:] == DEUTEROCANONICAL_CODES
+    assert codes[66:] == DEUTEROCANONICAL_CODES + ["LAO"]
 
     tob = next(b for b in cat if b.book_code == "TOB")
     assert tob.english_name == "Tobit"
@@ -173,6 +175,34 @@ def test_deuterocanonical_books_are_reachable(db, code):
 ])
 def test_deuterocanonical_aliases(db, name, code):
     assert db.get_passage(name).book_code == code
+
+
+def test_laodiceans_is_catalogued_and_complete(db):
+    book = next(b for b in db.get_catalog() if b.book_code == "LAO")
+    assert book.english_name == "Laodiceans"
+    assert book.testament == "NT"
+    assert book.chapters_count == 1
+    assert book.rv_available is True
+    assert book.lv_available is False
+
+    passage = db.get_passage("LAO 1:1-20", include_alignment=True)
+    assert passage.total_verses == passage.verses_count == 20
+    assert [v.verse_id for v in passage.verses] == [f"LAO.1.{n}" for n in range(1, 21)]
+    assert all(v.rv_text for v in passage.verses)
+    # LAO uses a separate Latin word table that is not yet imported. Its row
+    # numbers must not resolve to unrelated Greek or Hebrew word-table rows.
+    alignments = [a for v in passage.verses for a in v.alignments]
+    assert alignments
+    assert all(a["word_link_id"] is None for a in alignments)
+
+
+@pytest.mark.parametrize("name", ["LAO", "Laodiceans", "Laodikeia", "Laodicea"])
+def test_laodiceans_aliases_and_search(db, name):
+    assert db.get_passage(f"{name} 1:1").verses[0].verse_id == "LAO.1.1"
+    matches = db.search_text("grace", version="rv", testament="NT", book=name)
+    assert matches
+    assert all(m["book_code"] == "LAO" for m in matches)
+    assert db.search_text("grace", version="rv", testament="OT", book=name) == []
 
 
 def test_bare_code_wins_over_book_plus_chapter(db):
@@ -247,5 +277,6 @@ def test_raw_esfm_is_opt_in(db):
     assert plain.rv_esfm is None
 
     raw = db.get_passage("1 Kings 16:34", include_raw=True).verses[0]
-    assert r"\add !(Jericho)\add*" in raw.rv_esfm
+    # Updated source editions can attach a word link to the traditional name.
+    assert re.search(r"\\add !\(Jericho(?:¦\d+)?\)\\add\*", raw.rv_esfm)
     assert r"\q" in db.get_passage("Psalms 1:1", include_raw=True).verses[0].rv_esfm

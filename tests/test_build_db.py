@@ -4,11 +4,16 @@ tests/test_build_db.py
 Unit tests for the ESFM parsing helpers used by scripts/build_db.py.
 """
 
+import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
+import build_db  # noqa: E402
 from build_db import (  # noqa: E402
     parse_esfm_file,
     DECISION_FORMATS,
@@ -16,6 +21,51 @@ from build_db import (  # noqa: E402
     clean_esfm_text,
     extract_decisions,
 )
+
+
+@pytest.mark.parametrize("book_code", ["LAO", "ZZZ"])
+def test_build_validates_before_replacing_database(tmp_path, monkeypatch, book_code):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / f"OET-RV_{book_code}.ESFM").write_text(
+        f"\\id {book_code}\n\\h Test book\n\\c 1\n\\v 1 A word¦1.\n", encoding="utf-8"
+    )
+    for name in ("nt.tsv", "ot.tsv", "OET-LV_OT_lemma_table.tsv"):
+        (source / name).write_text("fixture\n", encoding="utf-8")
+    monkeypatch.setattr(build_db, "OET_REPO", source)
+    monkeypatch.setattr(build_db, "RV_DIR", source)
+    monkeypatch.setattr(build_db, "LV_NT_DIR", source / "empty_nt")
+    monkeypatch.setattr(build_db, "LV_OT_DIR", source / "empty_ot")
+    monkeypatch.setattr(build_db, "NT_TSV_PATH", source / "nt.tsv")
+    monkeypatch.setattr(build_db, "OT_TSV_PATH", source / "ot.tsv")
+
+    def ingest_fixture_words(conn):
+        # This unrelated Greek word reuses the source row number in the RV text.
+        conn.execute("""INSERT INTO words (
+            word_link_id, word_num, book_code, chapter, verse, word_seq, ref_str,
+            lang, source_status, is_selected, strongs_standard_json
+        ) VALUES ('JHN_1:1w1', 1, 'JHN', 1, 1, 1, 'JHN_1:1w1',
+                  'greek', 'selected', 1, '[]')""")
+
+    monkeypatch.setattr(build_db, "ingest_word_tables", ingest_fixture_words)
+    monkeypatch.setattr(subprocess, "run", lambda args, **kwargs:
+                        subprocess.CompletedProcess(args, 0, stdout="test-revision\n"))
+    output = tmp_path / "corpus.db"
+    previous = b"previous corpus contents"
+    output.write_bytes(previous)
+    monkeypatch.setattr(sys, "argv", ["build_db.py", "--output", str(output)])
+
+    if book_code == "ZZZ":
+        with pytest.raises(RuntimeError, match="existing database was not replaced"):
+            build_db.main()
+        assert output.read_bytes() == previous
+    else:
+        build_db.main()
+        assert build_db.verify_db(output)
+        with sqlite3.connect(output) as conn:
+            assert conn.execute("SELECT count(*) FROM verses WHERE book_code='LAO'").fetchone()[0] == 1
+            assert conn.execute("SELECT word_num, word_link_id FROM word_alignments").fetchall() == [(1, None)]
+    assert not list(tmp_path.glob("oet-build-*.db"))
 
 
 def test_add_alternate_name_is_a_known_code():

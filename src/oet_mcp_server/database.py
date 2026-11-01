@@ -118,6 +118,8 @@ BOOK_ALIASES = {
     "MA2": "MA2", "2MACCABEES": "MA2", "2MAC": "MA2", "MACC2": "MA2", "2 MACCABEES": "MA2",
     "MA3": "MA3", "3MACCABEES": "MA3", "3MAC": "MA3", "MACC3": "MA3", "3 MACCABEES": "MA3",
     "MA4": "MA4", "4MACCABEES": "MA4", "4MAC": "MA4", "MACC4": "MA4", "4 MACCABEES": "MA4",
+    # Additional NT-era writings.
+    "LAO": "LAO", "LAODICEANS": "LAO", "LAODIKEIA": "LAO", "LAODICEA": "LAO",
 }
 
 

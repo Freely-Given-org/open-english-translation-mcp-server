@@ -23,6 +23,7 @@ from collections import defaultdict, Counter
 WORKSPACE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(WORKSPACE_DIR / "src"))
 from oet_mcp_server.lexical import SCHEMA_VERSION, normalize_alias, greek_strongs, hebrew_strongs
+from verify_db import check as verify_db
 DB_DIR = WORKSPACE_DIR / "src" / "oet_mcp_server" / "data"
 DB_PATH = DB_DIR / "oet_corpus.db"
 
@@ -127,7 +128,12 @@ DEUTEROCANONICAL_NAMES = {
     "MA4": ("4 Maccabees", "4 Maccabees", "OT", 81),
 }
 
-ALL_BOOKS = {**BOOK_NAMES, **DEUTEROCANONICAL_NAMES}
+# Additional NT-era writings follow the existing catalogue without renumbering it.
+NT_APOCRYPHA_NAMES = {
+    "LAO": ("Laodiceans", "Laodikeia", "NT", 82),
+}
+
+ALL_BOOKS = {**BOOK_NAMES, **DEUTEROCANONICAL_NAMES, **NT_APOCRYPHA_NAMES}
 
 # Add standard translation decision formats
 DECISION_FORMATS = [
@@ -901,7 +907,9 @@ def ingest_bibles(conn: sqlite3.Connection):
     book_metadata = []
     all_sections = []
     alignments = []
-    word_numbers = {(r[0] == "greek", r[1]): r[2] for r in cur.execute("SELECT lang,word_num,word_link_id FROM words")}
+    # Separate source tables can reuse row numbers. Only resolve links to words
+    # belonging to this book; unsupported DC word tables must stay unresolved.
+    word_numbers = {(r[0], r[1]): r[2] for r in cur.execute("SELECT book_code,word_num,word_link_id FROM words")}
 
     def retain_context(meta, verses, version):
         book_metadata.append((meta["book_code"], version, json.dumps(meta, ensure_ascii=False)))
@@ -913,12 +921,11 @@ def ingest_bibles(conn: sqlite3.Connection):
                 sec["last"] = v
             # Suppress notes without shifting offsets into the returned verse ESFM.
             raw = re.sub(r"\\[fx]\s+.*?\\[fx]\*", lambda m: " " * len(m[0]), v["raw"], flags=re.DOTALL)
-            greek = ALL_BOOKS.get(v["book_code"], (None, None, "OT"))[2] == "NT"
             # Mask marker spellings without changing offsets into the verse ESFM.
             raw = re.sub(r"\\\+?[a-z]+\d*\*?", lambda m: " " * len(m[0]), raw)
             for match in re.finditer(r"([^\s\\¦]+)¦(\d+)", raw):
                 number = int(match[2])
-                alignments.append((v["verse_id"], version, word_numbers.get((greek, number)), number,
+                alignments.append((v["verse_id"], version, word_numbers.get((v["book_code"], number)), number,
                                    clean_esfm_text(match[1]).lstrip(ADD_CODES + "_=÷"), match.start(), match.end()))
         for number, sec in sections.items():
             first, last = sec["first"], sec["last"]
@@ -1101,6 +1108,8 @@ def main():
             if conn.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                 raise RuntimeError("Corpus integrity check failed")
         conn.close()
+        if not verify_db(temporary):
+            raise RuntimeError("Corpus validation failed; existing database was not replaced")
         os.replace(temporary, args.output)
     finally:
         Path(temporary).unlink(missing_ok=True)
