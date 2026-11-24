@@ -209,7 +209,7 @@ word alignment, grouped verses, pagination, morphology and the MCP output contra
 
 ## Deployment (Docker)
 
-> **Important:** the approximately 417 MiB corpus database is stored as a **Git-LFS** file. A
+> **For local builds:** the approximately 417 MiB corpus database is stored as a **Git-LFS** file. A
 > checkout without `git lfs pull` contains only a ~130-byte LFS pointer, which
 > makes every data tool fail at runtime. The Dockerfile guards against this:
 > `scripts/verify_db.py` runs at build time and **fails the build** if the DB
@@ -221,23 +221,37 @@ The `.github/workflows/docker-publish.yml` workflow materializes the LFS data,
 builds the image, and pushes it to
 `ghcr.io/freely-given-org/open-english-translation-mcp-server`
 as `:latest` and `:main` (on pushes to `main`) and `:v*` (on version tags).
-Deploying servers then pull instead of building:
+The published image includes the code and corpus database. Deploying servers
+download and run that image:
 
 > **Before this works**, the workflow must have published at least one image
 > (push to `main`, create a `v*` tag, or trigger it from the GitHub Actions
-> tab). Until then `docker compose pull` fails, so use the local-build path
+> tab). Until then pulling the image fails, so use the local-build path
 > below.
 
 ```bash
 git clone --filter=blob:none https://github.com/Freely-Given-org/open-english-translation-mcp-server.git
 cd open-english-translation-mcp-server
-docker compose pull          # pulls the GHCR image
-docker compose up -d         # no local build, no LFS data needed on the server
+docker compose up -d --pull always --no-build
 ```
+
+For each later update, run this from the directory containing `docker-compose.yml`:
+
+```bash
+docker compose up -d --pull always --no-build
+```
+
+`--pull always` checks for the latest published image, and `--no-build` prevents
+a local rebuild. Compose replaces the running container if the image has changed.
+Routine image updates do not require a separate source-code or Git-LFS download.
+GitHub publishes the image but does **not** automatically update your running server;
+run the command whenever you want to deploy the latest successfully published version.
 
 `OET_MCP_IMAGE` overrides the image used by `docker-compose.yml`.
 
 ### Building locally
+
+Use this when you specifically want to build an image from local source files:
 
 ```bash
 git lfs install && git lfs pull   # materialize the real corpus DB
