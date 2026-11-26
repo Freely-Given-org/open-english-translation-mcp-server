@@ -133,7 +133,7 @@ def test_bare_canonical_codes_resolve(db, code):
 
 
 DEUTEROCANONICAL_CODES = [
-    "TOB", "JDT", "ESG", "ES1", "ES2", "DAG", "BAR", "MAN",
+    "TOB", "JDT", "ESG", "GES", "LES", "DNG", "BAR", "MAN",
     "PS2", "WIS", "SIR", "MA1", "MA2", "MA3", "MA4",
 ]
 
@@ -165,8 +165,9 @@ def test_deuterocanonical_books_are_reachable(db, code):
 @pytest.mark.parametrize("name,code", [
     ("Tobit", "TOB"),
     ("Judith", "JDT"),
-    ("1 Esdras 1:1", "ES1"),
-    ("2 Esdras 1:1", "ES2"),
+    ("1 Esdras 1:1", "GES"),
+    ("2 Esdras 1:1", "LES"),
+    ("DAG 1:1", "DNG"),
     ("Additions to Esther", "ESG"),
     ("4 Maccabees 1:1", "MA4"),
     ("PS2", "PS2"),

@@ -114,9 +114,9 @@ DEUTEROCANONICAL_NAMES = {
     "TOB": ("Tobit", "Tobit", "OT", 67),
     "JDT": ("Judith", "Judith", "OT", 68),
     "ESG": ("Esther (Greek)", "Esther (Greek)", "OT", 69),
-    "ES1": ("1 Esdras", "1 Esdras", "OT", 70),
-    "ES2": ("2 Esdras", "2 Esdras", "OT", 71),
-    "DAG": ("Daniel (Greek)", "Daniel (Greek)", "OT", 72),
+    "GES": ("1 Esdras", "1 Esdras", "OT", 70),
+    "LES": ("2 Esdras", "2 Esdras", "OT", 71),
+    "DNG": ("Daniel (Greek)", "Daniel (Greek)", "OT", 72),
     "BAR": ("Baruch", "Baruch", "OT", 73),
     "MAN": ("Prayer of Manasses", "Prayer of Manasses", "OT", 74),
     "PS2": ("Psalm 151", "Psalm 151", "OT", 75),
@@ -427,7 +427,7 @@ def parse_esfm_file(filepath: Path, version: str):
     with open(filepath, "r", encoding="utf-8") as f:
         content = f.read()
 
-    # The filename carries the canonical OET book code (CH1, EZE, JAM, JDE, ...), which is
+    # The filename carries the BOS book code (CH1, EZE, JAM, JDE, DNG, GES, ...), which is
     # what BOOK_NAMES and the word tables use. The in-file "\id" marker spells some of the
     # same books differently (1CH, EZK, JAS, JUD, ...), so only use it as a fallback.
     book_code = filepath.stem
